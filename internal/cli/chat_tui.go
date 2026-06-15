@@ -230,6 +230,7 @@ type chatTUI struct {
 	// resumePick is the interactive "/resume" session picker overlay. Non-nil
 	// while the user browses saved sessions with ↑/↓ and confirms with Enter.
 	resumePick *resumePicker
+	copyPick   *copyPicker
 	lastEsc    time.Time
 
 	// mcp is the interactive "/mcp" manager overlay. mcpDisabled tracks servers
@@ -948,6 +949,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mcpImport != nil {
 			return m.handleMCPImportKey(msg)
 		}
+		// Copy picker is modal while open.
+		if m.copyPick != nil {
+			return m.handleCopyPickerKey(msg)
+		}
 		// The resume picker is modal while open: keys navigate it.
 		if m.resumePick != nil {
 			return m.handleResumePickerKey(msg)
@@ -1557,6 +1562,7 @@ func (m chatTUI) bottomRows() int {
 		m.renderRewind(),
 		m.renderMCPImport(),
 		m.renderResumePicker(),
+		m.renderCopyPicker(),
 		m.renderCompletion(),
 	} {
 		if s != "" {
@@ -1597,7 +1603,7 @@ func (m chatTUI) bottomRows() int {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
-	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.rewind != nil || m.pendingApproval != nil {
+	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.copyPick != nil || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
 	return m.chooser != nil && !m.chooser.typing
@@ -2405,6 +2411,10 @@ func (m chatTUI) View() tea.View {
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
 	if card := m.renderResumePicker(); card != "" {
+		parts = append(parts, card)
+		rowsAboveBox += strings.Count(card, "\n") + 1
+	}
+	if card := m.renderCopyPicker(); card != "" {
 		parts = append(parts, card)
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
@@ -3874,6 +3884,10 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		}
 	case "/quit", "/exit":
 		return tea.Quit
+	case "/copy":
+		return m.runCopyCommand(input)
+	case "/export":
+		m.runExportCommand(input)
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, cmd)))
 	default:
@@ -3918,6 +3932,145 @@ func (m *chatTUI) runGoalSubcommand(input string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// runCopyCommand copies the Nth-latest assistant message from the current turn
+// (after the last user message) to the clipboard.
+//
+//   - "/copy"   — shows a numbered list of assistant messages to choose from.
+//   - "/copy N" — copies the Nth message directly (1 = most recent).
+//
+// Counting does not cross user message boundaries.
+func (m *chatTUI) runCopyCommand(input string) tea.Cmd {
+	m.echoLocalCommand(input)
+	// "/copy N" copies the Nth-newest assistant message directly (1 = most
+	// recent), matching the picker's newest-first ordering. A bare "/copy"
+	// (or a non-numeric argument) opens the interactive picker instead.
+	arg := strings.TrimSpace(strings.TrimPrefix(input, "/copy"))
+	if n, err := strconv.Atoi(arg); err == nil && n > 0 {
+		msgs := m.ctrl.History()
+		parts := copyAssistantParts(msgs)
+		if len(parts) == 0 {
+			m.notice(i18n.M.SlashCopyEmpty)
+			return nil
+		}
+		// copyAssistantParts is oldest-first; index 0 of the reversed slice
+		// is the most recent, so "/copy 1" = parts[len-1].
+		idx := len(parts) - n
+		if idx < 0 || idx >= len(parts) {
+			m.notice(i18n.M.SlashCopyEmpty)
+			return nil
+		}
+		m.notice(i18n.M.SlashCopyDone)
+		return copyToClipboard(parts[idx])
+	}
+	m.openCopyPicker()
+	return nil
+}
+
+// firstLine returns the first non-empty line of s, truncated to 80 runes.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			runes := []rune(t)
+			if len(runes) > 80 {
+				return string(runes[:77]) + "..."
+			}
+			return t
+		}
+	}
+	return "..."
+}
+
+// copyAssistantParts returns the Content of assistant messages after the last
+// user message in msgs, skipping empty strings and model placeholders ("…", "...").
+// The result is chronological (oldest first).
+func copyAssistantParts(msgs []provider.Message) []string {
+	lastUserIdx := -1
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == provider.RoleUser {
+			lastUserIdx = i
+			break
+		}
+	}
+	start := lastUserIdx + 1
+	if lastUserIdx < 0 {
+		start = 0
+	}
+	var parts []string
+	for i := start; i < len(msgs); i++ {
+		if msgs[i].Role != provider.RoleAssistant {
+			continue
+		}
+		c := strings.TrimSpace(msgs[i].Content)
+		if c == "" || c == "..." || c == "…" {
+			continue
+		}
+		parts = append(parts, c)
+	}
+	return parts
+}
+
+// runExportCommand exports the entire session as a markdown file, excluding
+// system messages, reasoning/thinking content, and tool calls/results.
+func (m *chatTUI) runExportCommand(input string) {
+	m.echoLocalCommand(input)
+	msgs := m.ctrl.History()
+	if len(msgs) == 0 {
+		m.notice(i18n.M.SlashExportEmpty)
+		return
+	}
+
+	var b strings.Builder
+	b.WriteString("# reasonix session\n\n")
+	lastRole := provider.Role("")
+	for _, msg := range msgs {
+		switch msg.Role {
+		case provider.RoleUser:
+			// Skip internal steer messages.
+			if _, isSteer := agent.SteerText(msg.Content); isSteer {
+				continue
+			}
+			content := control.StripComposePrefixes(msg.Content)
+			if content == "" {
+				continue
+			}
+			if lastRole != provider.RoleUser {
+				b.WriteString("## User\n\n")
+			}
+			b.WriteString(content)
+			b.WriteString("\n\n")
+			lastRole = provider.RoleUser
+		case provider.RoleAssistant:
+			content := strings.TrimSpace(msg.Content)
+			if content == "" {
+				continue
+			}
+			if lastRole != provider.RoleAssistant {
+				b.WriteString("## Assistant\n\n")
+			}
+			b.WriteString(content)
+			b.WriteString("\n\n")
+			lastRole = provider.RoleAssistant
+		}
+	}
+
+	// Choose a filename. If the workspace has a root, save there; otherwise
+	// the current directory. Use a timestamp-based name.
+	dir := "."
+	if m.ctrl != nil {
+		if wr := m.ctrl.WorkspaceRoot(); wr != "" {
+			dir = wr
+		}
+	}
+	ts := time.Now().Format("20060102-150405")
+	filename := fmt.Sprintf("session-%s.md", ts)
+	path := filepath.Join(dir, filename)
+	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashUnknown, err))
+		return
+	}
+	m.notice(fmt.Sprintf(i18n.M.SlashExportDoneFmt, path))
 }
 
 func (m *chatTUI) echoLocalCommand(input string) {
