@@ -477,8 +477,8 @@ func chatREPL(args []string) int {
 			}
 			orc.AddAgent(entry.Name, childCtrl, entry)
 		}
-		orc.SetSessionDir(config.SessionDir())
-		if err := orc.LoadSessions(config.SessionDir()); err != nil {
+		orc.SetSessionDir(resolveCLISessionDir())
+		if err := orc.LoadSessions(resolveCLISessionDir()); err != nil {
 			fmt.Fprintln(os.Stderr, "orchestrator: load sessions:", err)
 		}
 
@@ -616,7 +616,7 @@ func chatREPL(args []string) int {
 		ctrl.Close()
 	}
 	if orc != nil {
-		if err := orc.SaveSessions(config.SessionDir()); err != nil {
+		if err := orc.SaveSessions(resolveCLISessionDir()); err != nil {
 			fmt.Fprintln(os.Stderr, "orchestrator: save sessions:", err)
 		}
 		orc.Close()
