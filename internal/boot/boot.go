@@ -293,6 +293,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 	}
+	// CodeGraph is a built-in server shipped with Reasonix, not a [[plugins]]
+	// entry, so it is invisible to the agent-scoping logic above. Without this
+	// entry its tools are silently dropped by registerDeferred (the process
+	// starts but nothing adds its tools to the registry).
+	agentAllowedPlugins["codegraph"] = true
 
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to lazy
