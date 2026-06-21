@@ -5,10 +5,10 @@ package codegraph
 // verified against trusted metadata instead of trusting whichever mirror served
 // the bytes.
 var releaseAssetSHA256 = map[string]string{
-	"codegraph-darwin-arm64.tar.gz": "83a3b90bc334ab2a34240e29e9fab7ff273ab6381794aa6f3cba428397c916b5",
-	"codegraph-darwin-x64.tar.gz":   "74d2331161a317fa6164285a61ec480ce7893be46c1677a4b5a2932e35586b9d",
-	"codegraph-linux-arm64.tar.gz":  "7b4225f90ca5285cccfec099323129348c2753bcbc9910281f9b61db88fa5f37",
-	"codegraph-linux-x64.tar.gz":    "61805e3c9b4052db53c71241b800859095fea4f2cbd2a1844a6c2b9594b9f84a",
-	"codegraph-win32-arm64.zip":     "c728ada3d42701213dde26d8e94ded3ed1c7d4b568124210649ce8f9f938a31a",
-	"codegraph-win32-x64.zip":       "a5571d3ee54cc1caac76bf09e0f7cb350fc4dd6788a5437217eac33b71fa7a15",
+	"codegraph-darwin-arm64.tar.gz": "95bb27bf6382b69659e158e0c04d71cc394778951e1317d582be7807e7866908",
+	"codegraph-darwin-x64.tar.gz":   "3311cc1d1f0f0ad742709b6a43d8a9187b1ef0af0dd30e0b58008dc673e29478",
+	"codegraph-linux-arm64.tar.gz":  "e16f612bc96c2ebccd04574cbed500c9939147c80666ad6bb024398dff7992ae",
+	"codegraph-linux-x64.tar.gz":    "d45a068f44596a85c7ba7d0ef924eaf7103fbbf3cafbeb668127daff60a52228",
+	"codegraph-win32-arm64.zip":     "32190f7db56442b3663f1a4cac12c4cbc0de9a00bc12e6455365a217ed769aa5",
+	"codegraph-win32-x64.zip":       "21c0e498c07eb17b4e90e7c4f2bd86d197ac0e1a103d98e77f1858c5b15d7e31",
 }
