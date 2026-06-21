@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { asArray } from "../lib/array";
 import { app, openExternal } from "../lib/bridge";
 import { useT } from "../lib/i18n";
-import type { CapabilitiesView, MCPServerInput, ServerView, SkillRootSkillView, SkillRootView, SkillView } from "../lib/types";
+import { mcpServerLifecycleActions } from "../lib/mcpServerLifecycle";
+import type { CapabilitiesView, MCPServerInput, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { ResizableDrawer } from "./ResizableDrawer";
 import { Tooltip } from "./Tooltip";
@@ -13,6 +14,19 @@ import { ModalCloseButton } from "./ModalCloseButton";
 // each server shows a connected/failed dot, transport, and tool/prompt/resource
 // counts, with add / remove / retry; skills list their scope and run mode.
 type CapTab = "servers" | "skills";
+
+type SettingsSnapshot<T> = { key: string; value: T };
+
+let mcpSettingsSnapshot: SettingsSnapshot<ServerView[]> | null = null;
+let skillsSettingsSnapshot: SettingsSnapshot<SkillsSettingsView> | null = null;
+
+function settingsSnapshotKey(meta: Awaited<ReturnType<typeof app.Meta>> | null | undefined, tabs: TabMeta[] | null | undefined): string {
+  const active = tabs?.find((tab) => tab.active);
+  const tabID = (active?.id || "").trim();
+  const root = (active?.workspaceRoot || active?.workspacePath || active?.cwd || meta?.workspaceRoot || meta?.workspacePath || meta?.cwd || "").trim();
+  const channel = (meta?.eventChannel || "").trim();
+  return `${channel}|${tabID}|${root}`;
+}
 
 export function CapabilitiesPanel({
   onClose,
@@ -94,7 +108,6 @@ export function CapabilitiesPanel({
       active: servers.filter((s) => s.status !== "failed"),
     };
   }, [view]);
-
   const toggleSkill = useCallback((name: string) => {
     setExpandedSkills((prev) => {
       const next = new Set(prev);
@@ -285,14 +298,24 @@ export function CapabilitiesPanel({
 
 function normalizeCapabilitiesView(view: CapabilitiesView | null | undefined): CapabilitiesView {
   return {
-    servers: sortServersForDisplay(
-      asArray(view?.servers).map((server) => ({
-        ...server,
-        args: asArray(server.args),
-        envKeys: asArray(server.envKeys),
-        toolList: asArray(server.toolList),
-      })),
-    ),
+    servers: normalizeServerViews(view?.servers),
+    ...normalizeSkillsSettingsView(view),
+  };
+}
+
+function normalizeServerViews(servers: ServerView[] | null | undefined): ServerView[] {
+  return sortServersForDisplay(
+    asArray(servers).map((server) => ({
+      ...server,
+      args: asArray(server.args),
+      envKeys: asArray(server.envKeys),
+      toolList: asArray(server.toolList),
+    })),
+  );
+}
+
+function normalizeSkillsSettingsView(view: SkillsSettingsView | CapabilitiesView | null | undefined): SkillsSettingsView {
+  return {
     skills: asArray(view?.skills),
     skillRoots: asArray(view?.skillRoots).map((root) => ({
       ...root,
@@ -750,7 +773,7 @@ function FailedServersNotice({
                 <span className="cap-dot cap-dot--failed" />
                 <div className="cap-failure__text">
                   <div className="cap-failure__name">{s.name}</div>
-                  <div className="cap-failure__summary">{s.authStatus === "required" ? t("caps.authRequiredSummary") : summarizeServerError(error, t)}</div>
+                  <div className="cap-failure__summary">{s.authStatus === "required" ? t("caps.authRequiredSummary") : summarizeServerError(error)}</div>
                 </div>
               </div>
               <div className="cap-failure__actions">
@@ -834,6 +857,7 @@ function ServerRow({
 }) {
   const t = useT();
   const actionLabel = serverActionLabel(s, t);
+  const lifecycle = mcpServerLifecycleActions(s);
   const tools = s.toolList ?? [];
   let sub =
     s.status === "failed"
@@ -850,7 +874,6 @@ function ServerRow({
   if (s.authStatus === "possible" && s.status !== "failed") {
     sub = `${sub} · ${t("caps.authPossibleShort")}`;
   }
-  const enabled = s.status === "connected" || s.status === "deferred" || s.status === "initializing";
   const handlePrimaryAction = () => {
     if (shouldOpenAuth(s)) {
       openExternal((s.authUrl || "").trim());
@@ -881,18 +904,16 @@ function ServerRow({
             <div className="cap-row__sub">{sub}</div>
           </div>
           <div className="cap-row__actions">
-            {s.status === "failed" ? (
+            {lifecycle.showRetryInRow ? (
               <button className="btn btn--small" disabled={busy} onClick={handlePrimaryAction}>
                 {actionLabel}
               </button>
-            ) : s.status === "initializing" ? (
-              <span className="cap-row__pending">{t("caps.initializingShort")}</span>
             ) : (
-              <Tooltip label={enabled ? t("caps.disable") : t("caps.enable")}>
+              <Tooltip label={lifecycle.enabled ? t("caps.disable") : t("caps.enable")}>
                 <label className="cap-switch">
                   <input
                     type="checkbox"
-                    checked={enabled}
+                    checked={lifecycle.enabled}
                     disabled={busy}
                     onChange={(e) => onToggle(e.target.checked)}
                   />
@@ -956,9 +977,10 @@ function ServerDetails({
   const t = useT();
   const command = serverCommand(s);
   const canEditConfig = s.configured && !s.builtIn;
-  const canConnectNow = s.status === "deferred" || s.status === "disabled";
-  const canReconnect = s.status === "connected";
-  const canShowTools = (s.tools ?? 0) > 0 || (tools?.length ?? 0) > 0;
+  const lifecycle = mcpServerLifecycleActions(s);
+  const canConnectNow = lifecycle.canConnectNow;
+  const canReconnect = lifecycle.canReconnect;
+  const canShowTools = s.status === "connected" && ((s.tools ?? 0) > 0 || (tools?.length ?? 0) > 0);
   const showClearAuth = canClearAuth(s);
   const authLabel = serverAuthLabel(s, t);
   if (editing && canEditConfig) {
@@ -1079,13 +1101,12 @@ function EditServerForm({
   const ready = isStdio ? command.trim() !== "" : url.trim() !== "";
 
   const submit = () => {
-    const parts = command.trim().split(/\s+/).filter(Boolean);
     const envText = env.trim();
     onSave({
       name: s.name,
       transport,
-      command: isStdio ? (parts[0] ?? "") : "",
-      args: isStdio ? parts.slice(1) : [],
+      command: isStdio ? command.trim() : "",
+      args: [],
       url: isStdio ? "" : url.trim(),
       env: envText === "" ? null : parseEnvText(envText),
     });
@@ -1177,12 +1198,9 @@ function serverStatusLabel(s: ServerView, t: ReturnType<typeof useT>): string {
   }
 }
 
-function summarizeServerError(error: string, t: ReturnType<typeof useT>): string {
+function summarizeServerError(error: string): string {
   const normalized = error.replace(/\s+/g, " ").trim();
   const plugin = normalized.match(/plugin "([^"]+)"/i)?.[1];
-  if (plugin === "codegraph" && normalized.includes("context deadline exceeded")) {
-    return t("caps.codegraphWarming");
-  }
   const npmCode = normalized.match(/\bnpm error code ([A-Z0-9_]+)/i)?.[1];
   const errno = normalized.match(/\berrno (-?\d+)/i)?.[1];
   const reason = npmCode
@@ -1388,7 +1406,6 @@ function AddServerForm({
   const ready = name.trim() !== "" && (isStdio ? command.trim() !== "" : url.trim() !== "");
 
   const submit = () => {
-    const parts = command.trim().split(/\s+/).filter(Boolean);
     const envMap: Record<string, string> = {};
     for (const line of env.split("\n")) {
       const eq = line.indexOf("=");
@@ -1397,8 +1414,8 @@ function AddServerForm({
     onAdd({
       name: name.trim(),
       transport,
-      command: isStdio ? (parts[0] ?? "") : "",
-      args: isStdio ? parts.slice(1) : [],
+      command: isStdio ? command.trim() : "",
+      args: [],
       url: isStdio ? "" : url.trim(),
       env: envMap,
     });
@@ -1436,7 +1453,8 @@ function AddServerForm({
 // embedded inside the settings centre.
 export function MCPServersSettingsPage() {
 	const t = useT();
-	const [view, setView] = useState<CapabilitiesView | null>(null);
+	const [snapshotKey, setSnapshotKey] = useState("");
+	const [servers, setServers] = useState<ServerView[] | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [adding, setAdding] = useState(false);
@@ -1446,14 +1464,28 @@ export function MCPServersSettingsPage() {
 	const [expandedServerTools, setExpandedServerTools] = useState<Set<string>>(() => new Set());
 
 	const reload = useCallback(async () => {
-		setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [] }))));
+		const [meta, tabs] = await Promise.all([
+			app.Meta().catch(() => null),
+			app.ListTabs().catch(() => []),
+		]);
+		const key = settingsSnapshotKey(meta, tabs);
+		setSnapshotKey(key);
+		const cached = key ? mcpSettingsSnapshot : null;
+		if (cached?.key === key) {
+			setServers(cached.value);
+		} else {
+			setServers(null);
+		}
+		const next = normalizeServerViews(await app.MCPServers().catch(() => []));
+		mcpSettingsSnapshot = { key, value: next };
+		setServers(next);
 	}, []);
 	useEffect(() => { void reload(); }, [reload]);
 	useEffect(() => {
-		if (!view || !view.servers.some((s) => s.status === "initializing" || s.status === "deferred")) return;
+		if (!servers?.some((s) => s.status === "initializing" || s.status === "deferred")) return;
 		const id = window.setInterval(() => void reload(), 2500);
 		return () => window.clearInterval(id);
-	}, [reload, view]);
+	}, [reload, servers]);
 
 	const mutate = async (fn: () => Promise<unknown>) => {
 		setBusy(true);
@@ -1470,15 +1502,13 @@ export function MCPServersSettingsPage() {
 			setBusy(false);
 		}
 	};
-
 	const serverGroups = useMemo(() => {
-		const servers = sortServersForDisplay(view?.servers ?? []);
+		const sorted = sortServersForDisplay(servers ?? []);
 		return {
-			failed: servers.filter((s) => s.status === "failed"),
-			active: servers.filter((s) => s.status !== "failed"),
+			failed: sorted.filter((s) => s.status === "failed"),
+			active: sorted.filter((s) => s.status !== "failed"),
 		};
-	}, [view]);
-
+	}, [servers]);
 	const toggleError = useCallback((name: string) => {
 		setExpandedErrors((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
 	}, []);
@@ -1490,48 +1520,52 @@ export function MCPServersSettingsPage() {
 	}, []);
 
 	const summary = useMemo(() => {
-		if (!view) return "";
-		return mcpServerSummary(view.servers, t);
-	}, [view, t]);
+		if (!servers) return "";
+		return mcpServerSummary(servers, t);
+	}, [servers, t]);
 
-	if (!view) return <div className="empty">{t("caps.loading")}</div>;
+	const loading = !servers;
+	const actionBusy = busy || !snapshotKey || loading;
 
-	return (
-		<section className="mem-section">
-			{err && serverGroups.failed.length === 0 && <div className="banner banner--error">{err}</div>}
-			<div className="cap-mcp-toolbar">
-				{view.servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
+		return (
+			<section className="mem-section">
+				{err && serverGroups.failed.length === 0 && <div className="banner banner--error">{err}</div>}
+				<div className="cap-mcp-toolbar">
+				{servers && servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
 				<div className="cap-mcp-toolbar__actions">
 					{!adding && (
-						<button className="btn btn--small" disabled={busy} onClick={() => setAdding(true)}>
+						<button className="btn btn--small" disabled={actionBusy} onClick={() => setAdding(true)}>
 							{t("caps.addServer")}
 						</button>
 					)}
 				</div>
 			</div>
-			{serverGroups.failed.length > 0 && (
-				<FailedServersNotice
-					servers={serverGroups.failed}
-					expanded={expandedErrors}
-					busy={busy}
-					onToggle={toggleError}
-					onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
-					onRetryMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.ReconnectMCPServer(name))))}
+				{serverGroups.failed.length > 0 && (
+					<FailedServersNotice
+						servers={serverGroups.failed}
+						expanded={expandedErrors}
+						busy={actionBusy}
+						onToggle={toggleError}
+						onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+						onRetryMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.ReconnectMCPServer(name))))}
 					onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
 					onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
 					onConfirmMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.RemoveMCPServer(name))))}
-				/>
+					/>
 			)}
-			{view.servers.length === 0 && !adding && (
+			{loading && !adding && (
+				<div className="mem-empty">{t("caps.loading")}</div>
+			)}
+			{!loading && servers.length === 0 && !adding && (
 				<div className="mem-empty">{t("caps.noServers")}</div>
 			)}
 			{serverGroups.active.length > 0 && (
 				<div className="cap-server-section">
 					<div className="cap-server-section__title">{t("caps.availableServers")}</div>
-					<ServerGroup
-						busy={busy}
-						servers={serverGroups.active}
-						expanded={expandedServers}
+						<ServerGroup
+							busy={actionBusy}
+							servers={serverGroups.active}
+							expanded={expandedServers}
 						expandedTools={expandedServerTools}
 						editing={editing}
 						onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
@@ -1562,14 +1596,29 @@ export function MCPServersSettingsPage() {
 // the settings centre.
 export function SkillsSettingsPage() {
 	const t = useT();
-	const [view, setView] = useState<CapabilitiesView | null>(null);
+	const [snapshotKey, setSnapshotKey] = useState("");
+	const [view, setView] = useState<SkillsSettingsView | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [skillQuery, setSkillQuery] = useState("");
 	const [expandedSkills, setExpandedSkills] = useState<Set<string>>(() => new Set());
 
 	const reload = useCallback(async () => {
-		setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [] }))));
+		const [meta, tabs] = await Promise.all([
+			app.Meta().catch(() => null),
+			app.ListTabs().catch(() => []),
+		]);
+		const key = settingsSnapshotKey(meta, tabs);
+		setSnapshotKey(key);
+		const cached = key ? skillsSettingsSnapshot : null;
+		if (cached?.key === key) {
+			setView(cached.value);
+		} else {
+			setView(null);
+		}
+		const next = normalizeSkillsSettingsView(await app.SkillsSettings().catch(() => ({ skills: [], skillRoots: [] })));
+		skillsSettingsSnapshot = { key, value: next };
+		setView(next);
 	}, []);
 	useEffect(() => { void reload(); }, [reload]);
 
@@ -1609,6 +1658,7 @@ export function SkillsSettingsPage() {
 	}, []);
 
 	if (!view) return <div className="empty">{t("caps.loading")}</div>;
+	const actionBusy = busy || !snapshotKey;
 
 	return (
 		<section className="mem-section">
@@ -1624,7 +1674,7 @@ export function SkillsSettingsPage() {
 			</div>
 			<SkillSources
 				roots={view.skillRoots ?? []}
-				busy={busy}
+				busy={actionBusy}
 				onAdd={() => mutate(async () => {
 					const path = await app.PickSkillFolder();
 					if (path) await app.AddSkillPath(path);
@@ -1648,7 +1698,7 @@ export function SkillsSettingsPage() {
 						<SkillRow
 							key={sk.name}
 							skill={sk}
-							busy={busy}
+							busy={actionBusy}
 							expanded={expandedSkills.has(sk.name)}
 							onToggle={() => toggleSkill(sk.name)}
 							onToggleEnabled={(enabled) => void mutate(() => app.SetSkillEnabled(sk.name, enabled))}

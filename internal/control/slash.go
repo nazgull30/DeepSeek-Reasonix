@@ -8,6 +8,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/hook"
 	"reasonix/internal/i18n"
+	"reasonix/internal/migration"
 	"reasonix/internal/skill"
 )
 
@@ -42,7 +43,7 @@ type ArgData struct {
 // (everything after the command word). It returns the suggestions filtered by
 // the token being typed and the byte offset where that token begins, so a caller
 // replaces just that token. Only structured commands participate (/mcp /model
-// /skills /hooks /effort /auto-plan /reasoning-language /theme /language);
+// /skills /hooks /effort /auto-plan /goal /reasoning-language /theme /language);
 // others yield nil. Single source of truth for CLI + desktop.
 func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 	cmdEnd := strings.IndexAny(line, " \t")
@@ -68,6 +69,8 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 		raw = effortArgItems(prior, d)
 	case "/auto-plan":
 		raw = autoPlanArgItems(prior)
+	case "/goal":
+		raw = goalArgItems(prior)
 	case "/reasoning-language":
 		raw = reasoningLanguageArgItems(prior)
 	case "/theme":
@@ -78,6 +81,18 @@ func SlashArgItems(line string, d ArgData) ([]SlashItem, int) {
 		return nil, from
 	}
 	return filterSlash(raw, line, from, cur), from
+}
+
+func goalArgItems(prior []string) []SlashItem {
+	if len(prior) > 1 {
+		return nil
+	}
+	return []SlashItem{
+		{Label: "--research", Insert: "--research ", Hint: "force durable AutoResearch state"},
+		{Label: "--simple", Insert: "--simple ", Hint: "force lightweight Goal"},
+		{Label: "status", Insert: "status", Hint: "show active goal"},
+		{Label: "clear", Insert: "clear", Hint: "stop goal mode"},
+	}
 }
 
 func autoPlanArgItems(prior []string) []SlashItem {
@@ -188,7 +203,7 @@ func mcpArgItems(prior []string, cur string, d ArgData) []SlashItem {
 			{Label: "show", Insert: "show ", Hint: "show MCP server details", Descend: true},
 			{Label: "tools", Insert: "tools ", Hint: "show MCP server tools", Descend: true},
 			{Label: "remove", Insert: "remove ", Hint: i18n.M.ArgMcpRemove, Descend: true},
-			{Label: "import", Insert: "import", Hint: "import Codex-enabled servers from cc-switch"},
+			{Label: "import", Insert: "import", Hint: "import MCP servers from cc-switch"},
 		}
 	}
 	switch prior[1] {
@@ -342,11 +357,11 @@ func filterSlash(items []SlashItem, line string, from int, cur string) []SlashIt
 	return out
 }
 
-// managementNotice handles the read-only management slash commands on the Submit
-// path (used by the desktop and HTTP frontends, which route raw input through
-// Submit — the chat TUI has its own richer handlers). It emits a Notice listing
-// and reports whether it handled the verb. Skills and custom commands are NOT
-// here — those resolve to a turn in Submit.
+// managementNotice handles management slash commands on the Submit path (used by
+// the desktop and HTTP frontends, which route raw input through Submit — the chat
+// TUI has its own richer handlers). It emits Notice output and reports whether
+// it handled the verb. Skills and custom commands are NOT here — those resolve
+// to a turn in Submit.
 func (c *Controller) managementNotice(trimmed string) bool {
 	fields := strings.Fields(trimmed)
 	if len(fields) == 0 {
@@ -363,6 +378,8 @@ func (c *Controller) managementNotice(trimmed string) bool {
 		}
 	case "/memory":
 		c.notice(c.memoryListText())
+	case "/migrate", "/migration":
+		migration.RunLegacyRescue(c.sink)
 	case "/skill", "/skills":
 		sub := ""
 		if len(fields) >= 2 {
@@ -396,7 +413,7 @@ func (c *Controller) managementNotice(trimmed string) bool {
 			if err := hook.Trust(root, ""); err != nil {
 				c.notice("hooks trust: " + err.Error())
 			} else {
-				c.notice("trusted this project's hooks — they load on the next /new or restart")
+				c.notice("trusted this project's hooks — restart Reasonix to load them")
 			}
 		default:
 			c.notice("unknown /hooks subcommand " + fields[1] + " — try: /hooks, /hooks trust")

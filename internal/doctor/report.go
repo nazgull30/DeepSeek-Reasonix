@@ -129,21 +129,25 @@ func Collect(opts Options) Report {
 		}
 	}
 	cwd, _ := os.Getwd()
+	sourcePath := config.SourcePath()
+	userPath := config.UserConfigPath()
+	if legacyPath := config.LegacyUserConfigPath(); userPath != "" && legacyPath != "" {
+		if _, userErr := os.Stat(userPath); userErr == nil {
+			if _, legacyErr := os.Stat(legacyPath); legacyErr == nil {
+				warnings = append(warnings, "legacy user config exists at "+redactHome(legacyPath)+
+					" but is ignored because "+redactHome(userPath)+" exists")
+			}
+		}
+	}
 	report := Report{
 		Version: opts.Version,
 		OS:      runtime.GOOS,
 		Arch:    runtime.GOARCH,
 		CWD:     redactHome(cwd),
 		Config: ConfigReport{
-			SourcePath:   redactHome(config.SourcePath()),
-			UserPath:     redactHome(config.UserConfigPath()),
+			SourcePath:   redactHome(sourcePath),
+			UserPath:     redactHome(userPath),
 			DefaultModel: cfg.DefaultModel,
-		},
-		Codegraph: CodegraphReport{
-			Enabled:     cfg.Codegraph.Enabled,
-			AutoInstall: cfg.Codegraph.AutoInstall,
-			Version:     codegraph.Version,
-			CacheDir:    redactHome(codegraph.CacheDir()),
 		},
 		LSP: LSPReport{
 			Enabled: cfg.LSP.Enabled,
@@ -243,16 +247,6 @@ func RenderText(r Report) string {
 			fmt.Fprintf(&b, "  %-16s %-8s %s\n", p.Name, p.Transport, valueOr(p.Target, "(redacted)"))
 		}
 	}
-
-	resolved := "missing"
-	if r.Codegraph.Resolved {
-		resolved = "resolved"
-	}
-	fmt.Fprintf(&b, "\ncodegraph\n")
-	fmt.Fprintf(&b, "  enabled      %v\n", r.Codegraph.Enabled)
-	fmt.Fprintf(&b, "  auto_install %v\n", r.Codegraph.AutoInstall)
-	fmt.Fprintf(&b, "  version      %s\n", r.Codegraph.Version)
-	fmt.Fprintf(&b, "  resolved     %s\n", resolved)
 
 	fmt.Fprintf(&b, "\nlsp\n")
 	fmt.Fprintf(&b, "  enabled      %v\n", r.LSP.Enabled)

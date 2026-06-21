@@ -32,6 +32,24 @@ func (s *recordingSink) texts() []string {
 	return out
 }
 
+type blockingFinishedSink struct {
+	mu       sync.Mutex
+	events   []event.Event
+	entered  chan struct{}
+	released chan struct{}
+	once     sync.Once
+}
+
+func (s *blockingFinishedSink) Emit(ev event.Event) {
+	if strings.Contains(ev.Text, "background bash finished") {
+		s.once.Do(func() { close(s.entered) })
+		<-s.released
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, ev)
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -42,6 +60,33 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("condition not met within deadline")
+}
+
+func TestStalledWarningIgnoresReturnedJobBeforeTerminalStatusPublished(t *testing.T) {
+	sink := &blockingFinishedSink{entered: make(chan struct{}), released: make(chan struct{})}
+	m := NewManager(sink, WithStalledWarningAfter(20*time.Millisecond))
+	defer func() {
+		close(sink.released)
+		m.Close()
+	}()
+
+	j := m.Start("bash", "", func(context.Context, io.Writer) (string, error) {
+		return "", nil
+	})
+	select {
+	case <-sink.entered:
+	case <-time.After(time.Second):
+		t.Fatal("completion notice did not start")
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	note := m.DrainCompletedNote()
+	if strings.Contains(note, "may be stalled") {
+		t.Fatalf("got false stalled warning for already-returned job %s: %q", j.ID, note)
+	}
+	if !strings.Contains(note, j.ID) || !strings.Contains(note, string(Done)) {
+		t.Fatalf("completion note = %q, want done update for %s", note, j.ID)
+	}
 }
 
 // A job runs to completion: Wait reports Done with its output, and the completion
@@ -117,6 +162,64 @@ func TestKill(t *testing.T) {
 	}
 	if m.Kill(j.ID) {
 		t.Error("Kill on a finished job should return false")
+	}
+}
+
+func TestJobPanicRecoveredAsFailed(t *testing.T) {
+	sink := &recordingSink{}
+	m := NewManager(sink)
+	defer m.Close()
+
+	j := m.Start("task", "panic", func(context.Context, io.Writer) (string, error) {
+		panic("boom")
+	})
+	res := m.Wait(context.Background(), []string{j.ID}, 5)
+	if len(res) != 1 || res[0].Status != Failed {
+		t.Fatalf("want Failed result after panic, got %+v", res)
+	}
+	if !strings.Contains(res[0].Output, "internal error: panic: boom") {
+		t.Fatalf("panic output = %q, want internal panic message", res[0].Output)
+	}
+	waitFor(t, func() bool {
+		for _, text := range sink.texts() {
+			if strings.Contains(text, "background task failed") && strings.Contains(text, j.ID) && strings.Contains(text, "panic: boom") {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+func TestStalledWarningEmitsNoticeAndDrainNote(t *testing.T) {
+	sink := &recordingSink{}
+	m := NewManager(sink, WithStalledWarningAfter(20*time.Millisecond))
+	defer m.Close()
+
+	j := m.Start("bash", "quiet", func(ctx context.Context, _ io.Writer) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	defer m.Kill(j.ID)
+
+	waitFor(t, func() bool {
+		for _, text := range sink.texts() {
+			if strings.Contains(text, "may be stalled") && strings.Contains(text, j.ID) {
+				return true
+			}
+		}
+		return false
+	})
+	if _, st, ok := m.Output(j.ID); !ok || st != Running {
+		t.Fatalf("stalled job output status = %q ok=%v, want running", st, ok)
+	}
+	note := m.DrainCompletedNote()
+	if !strings.Contains(note, "may be stalled") || !strings.Contains(note, j.ID) {
+		t.Fatalf("stalled drain note = %q, want stalled update for %s", note, j.ID)
+	}
+	// The warning is once per job.
+	time.Sleep(30 * time.Millisecond)
+	if again := m.DrainCompletedNote(); again != "" {
+		t.Fatalf("second stalled drain note = %q, want empty", again)
 	}
 }
 
@@ -363,5 +466,101 @@ func TestDestroySessionWaitsForAlreadyKilledJobs(t *testing.T) {
 	m.FinishDestroySession("session-a")
 	if m.IsDestroying("session-a") {
 		t.Fatal("session-a should no longer be marked destroying")
+	}
+}
+
+func TestWaitTeardownTimesOutForNonCooperativeJob(t *testing.T) {
+	m := NewManager(event.Discard)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseJob := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		releaseJob()
+		m.Close()
+	}()
+
+	started := make(chan struct{})
+	j := m.StartForSession("session-a", "task", "cleanup", func(ctx context.Context, _ io.Writer) (string, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return "", ctx.Err()
+	})
+	<-started
+
+	handle := m.BeginDestroySession("session-a")
+	start := time.Now()
+	result := m.WaitTeardown(context.Background(), handle, 25*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("WaitTeardown took %s, want bounded wait", elapsed)
+	}
+	if len(result.TimedOut) != 1 {
+		t.Fatalf("timed out jobs = %+v, want one", result.TimedOut)
+	}
+	got := result.TimedOut[0]
+	if got.ID != j.ID || got.Kind != "task" || got.Label != "cleanup" || got.Waited <= 0 {
+		t.Fatalf("timed out job = %+v, want id=%s kind=task label=cleanup waited>0", got, j.ID)
+	}
+	if note := m.DrainCompletedNoteForSession("session-a"); note != "" {
+		t.Fatalf("destroyed session should not queue completion note, got %q", note)
+	}
+	if !m.IsDestroying("session-a") {
+		t.Fatal("session-a should stay destroying until delayed cleanup finishes")
+	}
+
+	releaseJob()
+	for _, ch := range handle.DoneChannels() {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for delayed job unwind")
+		}
+	}
+	m.FinishDestroySession("session-a")
+	if m.IsDestroying("session-a") {
+		t.Fatal("session-a should no longer be destroying after Finish")
+	}
+}
+
+func TestCloseWithGraceTimesOutForNonCooperativeJob(t *testing.T) {
+	m := NewManager(event.Discard)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseJob := func() { releaseOnce.Do(func() { close(release) }) }
+	defer func() {
+		releaseJob()
+		m.Close()
+	}()
+
+	started := make(chan struct{})
+	j := m.Start("task", "cleanup", func(ctx context.Context, _ io.Writer) (string, error) {
+		close(started)
+		<-ctx.Done()
+		<-release
+		return "", ctx.Err()
+	})
+	<-started
+
+	start := time.Now()
+	result := m.CloseWithGrace(25 * time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("CloseWithGrace took %s, want bounded wait", elapsed)
+	}
+	if len(result.TimedOut) != 1 {
+		t.Fatalf("timed out jobs = %+v, want one", result.TimedOut)
+	}
+	if got := result.TimedOut[0]; got.ID != j.ID || got.Kind != "task" || got.Label != "cleanup" || got.Waited <= 0 {
+		t.Fatalf("timed out job = %+v, want id=%s kind=task label=cleanup waited>0", got, j.ID)
+	}
+	if running := m.Running(); len(running) != 0 {
+		t.Fatalf("cancelled close jobs should not remain Running, got %+v", running)
+	}
+
+	releaseJob()
+	res := m.Wait(context.Background(), []string{j.ID}, 5)
+	if len(res) != 1 || res[0].Status != Killed {
+		t.Fatalf("want killed after delayed close cleanup, got %+v", res)
 	}
 }

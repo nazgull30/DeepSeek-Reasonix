@@ -30,19 +30,29 @@ type SessionUsageMeta struct {
 // navigable conversation tree. The conversation itself remains in the .jsonl
 // file; metadata lives beside it at <session>.meta.
 type BranchMeta struct {
-	ID               string           `json:"id"`
-	Name             string           `json:"name,omitempty"`
-	ParentID         string           `json:"parent_id,omitempty"`
-	ForkTurn         int              `json:"fork_turn,omitempty"`
-	ForkMessageIndex int              `json:"fork_message_index,omitempty"`
-	CreatedAt        time.Time        `json:"created_at"`
-	UpdatedAt        time.Time        `json:"updated_at"`
-	Scope            string           `json:"scope,omitempty"`
-	WorkspaceRoot    string           `json:"workspace_root,omitempty"`
-	TopicID          string           `json:"topic_id,omitempty"`
-	TopicTitle       string           `json:"topic_title,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name,omitempty"`
+	ParentID         string            `json:"parent_id,omitempty"`
+	ForkTurn         int               `json:"fork_turn,omitempty"`
+	ForkMessageIndex int               `json:"fork_message_index,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
+	Scope            string            `json:"scope,omitempty"`
+	WorkspaceRoot    string            `json:"workspace_root,omitempty"`
+	TopicID          string            `json:"topic_id,omitempty"`
+	TopicTitle       string            `json:"topic_title,omitempty"`
+	Model            string            `json:"model,omitempty"`
+	SchemaVersion    int               `json:"schema_version,omitempty"`
+	Turns            int               `json:"turns,omitempty"`
+	Preview          string            `json:"preview,omitempty"`
 	SessionUsage     *SessionUsageMeta `json:"session_usage,omitempty"`
 }
+
+// BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
+// writer records Turns/Preview from session content (UpdateSessionMeta,
+// Fork/Branch). Bump it when the meaning of those listing fields changes so
+// existing listings re-derive them instead of trusting a stale cache.
+const BranchMetaCountsVersion = 1
 
 func (m BranchMeta) DefaultScope() string {
 	switch m.Scope {
@@ -148,7 +158,11 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 		os.Remove(tmpPath)
 		return err
 	}
-	return fileutil.ReplaceFile(tmpPath, metaPath)
+	if err := fileutil.ReplaceFile(tmpPath, metaPath); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {
@@ -197,6 +211,9 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		if !IsVisibleSession(path) {
+			continue
+		}
 		preview, turns := previewSession(path)
 		if turns == 0 {
 			continue
@@ -245,4 +262,56 @@ func RenameSession(sessionPath string, title string) error {
 	}
 	m.TopicTitle = title
 	return SaveBranchMeta(sessionPath, m)
+}
+
+// LoadSessionModel reads the canonical provider/model ref saved beside a
+// session transcript.
+func LoadSessionModel(sessionPath string) (string, bool) {
+	meta, ok, err := LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		return "", false
+	}
+	model := strings.TrimSpace(meta.Model)
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
+
+// SetBranchModelPreserveUpdated stores the canonical provider/model ref without
+// changing the session activity timestamp.
+func SetBranchModelPreserveUpdated(sessionPath, model string) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	meta, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	meta.Model = strings.TrimSpace(model)
+	return SaveBranchMetaPreserveUpdated(sessionPath, meta)
+}
+
+// UpdateSessionMeta refreshes the listing-only sidecar fields (model, preview,
+// user-turn count) the sidebar and pickers read without decoding the .jsonl.
+// markActivity bumps UpdatedAt (the autosave path passes true on a real turn);
+// false preserves it (used to backfill legacy sessions during a read). An empty
+// model leaves the stored model untouched.
+func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivity bool) error {
+	if sessionPath == "" {
+		return fmt.Errorf("empty session path")
+	}
+	m, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(model) != "" {
+		m.Model = strings.TrimSpace(model)
+	}
+	m.Preview = preview
+	m.Turns = turns
+	// These counts were derived from the current content, so mark them
+	// authoritative — listing can then trust Turns (even 0) without re-decoding.
+	m.SchemaVersion = BranchMetaCountsVersion
+	return saveBranchMeta(sessionPath, m, markActivity)
 }

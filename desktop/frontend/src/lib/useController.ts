@@ -7,8 +7,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { asArray } from "./array";
 import { addBreadcrumb } from "./breadcrumbs";
 import { app, onEvent, onReady } from "./bridge";
+import { invalidateCache } from "./composerHistory";
 import { createRafBatch } from "./rafBatch";
 import { t } from "./i18n";
+import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools } from "./types";
 import type {
   BalanceInfo,
@@ -34,13 +36,13 @@ import type {
 
 export type ToolStatus = "running" | "done" | "error" | "stopped";
 
-export type LiveStream = { id: string; text: string; reasoning: string };
+export type LiveStream = { id: string; text: string; reasoning: string; reasoningComplete: boolean };
 export type MessageActionScope = "fork" | "summ-from" | "summ-upto" | "conversation" | "code" | "both";
 export type MessageActionState = { turn: number; scope: MessageActionScope };
 
 export type Item =
-  | { kind: "user"; id: string; text: string; failed?: boolean }
-  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean }
+  | { kind: "user"; id: string; text: string; submitText?: string; failed?: boolean; createdAt?: number }
+  | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; reasoningComplete?: boolean }
   | { kind: "phase"; id: string; text: string }
   | { kind: "notice"; id: string; level: "info" | "warn"; text: string }
   | {
@@ -62,16 +64,26 @@ export type Item =
       output?: string;
       error?: string;
       truncated?: boolean;
+      dataArchived?: boolean; // args/output trimmed for memory; full data available via backend
       durationMs?: number;
+      subject?: string; // stable collapsed subject from archived history payloads
+      summary?: string; // stable collapsed readout kept even after args/output archive
+      fileDiff?: ToolFileDiff; // previewed whole-file diff from writer dispatch
       isShell?: boolean; // true for !-prefix shell commands (controls default expand)
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
     };
 
+type ToolItem = Extract<Item, { kind: "tool" }>;
+
 interface State {
   items: Item[];
   running: boolean;
   turnActive: boolean;
+  pendingPrompt: boolean;
+  backgroundJobs: number;
+  cancelRequested: boolean;
+  cancellable: boolean;
   approval?: WireApproval;
   ask?: WireAsk;
   usage?: WireUsage;
@@ -95,12 +107,17 @@ interface State {
   sessionCurrency: string;
   retry?: { attempt: number; max: number };
   seq: number;
+  sessionGen: number;
 }
 
 export const initialState: State = {
   items: [],
   running: false,
   turnActive: false,
+  pendingPrompt: false,
+  backgroundJobs: 0,
+  cancelRequested: false,
+  cancellable: false,
   context: { used: 0, window: 0, sessionTokens: 0 },
   jobs: [],
   checkpoints: [],
@@ -112,6 +129,7 @@ export const initialState: State = {
   sessionCost: 0,
   sessionCurrency: "¥",
   seq: 0,
+  sessionGen: 0,
 };
 
 function usageTotalTokens(usage?: WireUsage): number {
@@ -119,6 +137,28 @@ function usageTotalTokens(usage?: WireUsage): number {
   if (usage.totalTokens > 0) return usage.totalTokens;
   const promptTokens = usage.promptTokens || usage.cacheHitTokens + usage.cacheMissTokens;
   return Math.max(0, promptTokens + usage.completionTokens);
+}
+
+type RuntimeMetaSnapshot = {
+  running: boolean;
+  pendingPrompt?: boolean;
+  backgroundJobs?: number;
+  cancellable?: boolean;
+};
+
+export function foregroundRunningFromRuntimeMeta(meta: RuntimeMetaSnapshot): boolean {
+  if (typeof meta.cancellable === "boolean") return meta.cancellable;
+  if ((meta.backgroundJobs ?? 0) > 0 && !meta.pendingPrompt) return false;
+  return Boolean(meta.running);
+}
+
+function updatesContextGauge(usage?: WireUsage): boolean {
+  const source = usage?.source?.trim();
+  return !source || source === "executor";
+}
+
+function countsTowardCurrentTurn(state: State): boolean {
+  return state.turnActive || state.running;
 }
 
 export function sameMeta(a?: Meta, b?: Meta): boolean {
@@ -130,6 +170,10 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.startupErr === b.startupErr &&
     a.eventChannel === b.eventChannel &&
     a.cwd === b.cwd &&
+    a.workspaceRoot === b.workspaceRoot &&
+    a.workspaceName === b.workspaceName &&
+    a.workspacePath === b.workspacePath &&
+    a.gitBranch === b.gitBranch &&
     a.autoApproveTools === b.autoApproveTools &&
     a.bypass === b.bypass &&
     a.collaborationMode === b.collaborationMode &&
@@ -152,7 +196,7 @@ export function shouldReconcileStaleTurn(
   return Math.max(0, now - lastTurnActivityAt) >= timeoutMs;
 }
 
-/** Mirrors Go backend's ReadOnly() + codegraph ReadOnlyToolNames(). */
+/** Mirrors Go backend's ReadOnly() hints. */
 export function isReadOnlyTool(name: string): boolean {
   switch (name) {
     case "read_file":
@@ -160,32 +204,58 @@ export function isReadOnlyTool(name: string): boolean {
     case "grep":
     case "glob":
     case "web_fetch":
+    case "code_index":
     case "bash_output":
     case "waitJob":
     case "todo_write":
     case "read_skill":
-    case "codegraph_callees":
-    case "codegraph_callers":
-    case "codegraph_context":
-    case "codegraph_explore":
-    case "codegraph_files":
-    case "codegraph_impact":
-    case "codegraph_node":
-    case "codegraph_search":
-    case "codegraph_status":
-    case "codegraph_trace":
       return true;
     default:
       return false;
   }
 }
 
+const ARCHIVED_TOOL_ARG_LIMIT = 200;
+
+function archivedToolArgs(_name: string, args: string): string {
+  return args && args.length > ARCHIVED_TOOL_ARG_LIMIT ? args.slice(0, ARCHIVED_TOOL_ARG_LIMIT) + "…" : args;
+}
+
+function isCanonicalTodoTool(tool: ToolItem): boolean {
+  return tool.name === "todo_write" && !tool.parentId && tool.status === "done" && !tool.error;
+}
+
+function latestCanonicalTodoToolIndex(items: Item[]): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const item = items[i];
+    if (item.kind === "tool" && isCanonicalTodoTool(item)) return i;
+  }
+  return -1;
+}
+
+function compactArchivedToolItems(items: Item[]): Item[] {
+  const canonicalTodoIndex = latestCanonicalTodoToolIndex(items);
+  return items.map((item, index) => {
+    if (item.kind !== "tool" || item.status === "running") return item;
+    const preserveArgs = index === canonicalTodoIndex;
+    const nextArgs = preserveArgs ? item.args : archivedToolArgs(item.name, item.args);
+    if (nextArgs === item.args && item.output === undefined && item.dataArchived === true) return item;
+    return {
+      ...item,
+      args: nextArgs,
+      output: undefined,
+      dataArchived: true,
+    };
+  });
+}
+
 type Action =
   | { type: "event"; e: WireEvent }
-  | { type: "user"; text: string; seq: number }
+  | { type: "user"; text: string; submitText?: string; seq: number }
   | { type: "unsend" }
   | { type: "send_failed"; error: string }
-  | { type: "backend_status"; running: boolean }
+  | { type: "backend_status"; running: boolean; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean }
+  | { type: "cancel_requested" }
   | { type: "meta"; meta: Meta }
   | { type: "context"; context: ContextInfo }
   | { type: "balance"; balance: BalanceInfo }
@@ -209,11 +279,14 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       resultByID.set(m.toolCallId, m);
     }
   }
+  const positionalResults = positionalToolResults(messages);
+  const consumedPositionalToolIndexes = new Set(Array.from(positionalResults.values(), (result) => result.index));
 
   const items: Item[] = [];
   let seq = startSeq;
   const consumedToolIDs = new Set<string>();
-  for (const m of messages) {
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const m = messages[messageIndex];
     if (m.role === "system") continue;
     if (m.role === "phase") {
       if (m.content.trim() !== "") {
@@ -244,7 +317,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "user") {
       if (m.content.trim() === "") continue;
-      items.push({ kind: "user", id: `${idPrefix}${seq}`, text: m.content });
+      items.push({ kind: "user", id: `${idPrefix}${seq}`, text: m.content, submitText: m.submitText, createdAt: m.createdAt });
       seq++;
       continue;
     }
@@ -254,20 +327,29 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         items.push({ kind: "assistant", id: `${idPrefix}${seq}`, text: m.content, reasoning: m.reasoning ?? "", streaming: false });
         seq++;
       }
-      for (const tc of m.toolCalls ?? []) {
-        const result = resultByID.get(tc.id);
+      const toolCalls = m.toolCalls ?? [];
+      for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
+        const tc = toolCalls[callIndex];
+        const positionalResult = tc.id ? undefined : positionalResults.get(positionalToolResultKey(messageIndex, callIndex));
+        const result = tc.id ? resultByID.get(tc.id) : positionalResult?.message;
         if (tc.id) consumedToolIDs.add(tc.id);
-        const output = result?.content ?? "";
-        const error = output.startsWith("[error") || output.startsWith("Error:") ? output : undefined;
+        const archived = Boolean(tc.argumentsArchived || result?.toolResultArchived);
+        const output = result?.toolResultArchived ? undefined : result?.content ?? "";
+        const error = result?.toolResultError || (output ? historyToolError(output) : undefined);
+        const fileDiff = fileDiffFromWire(tc);
         items.push({
           kind: "tool",
           id: tc.id || `${idPrefix}tool${seq}`,
           name: tc.name,
           args: tc.arguments ?? "",
           readOnly: isReadOnlyTool(tc.name),
-          status: error ? "error" : "done",
+          status: result ? (error ? "error" : "done") : "stopped",
           output,
           error,
+          dataArchived: archived || undefined,
+          subject: tc.subject,
+          summary: summarizeFileDiff(fileDiff) || tc.summary,
+          fileDiff,
           isShell: (tc.id || "").startsWith("shell-"),
         });
         seq++;
@@ -275,9 +357,9 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       continue;
     }
     if (m.role === "tool") {
-      if (m.toolCallId && consumedToolIDs.has(m.toolCallId)) continue;
-      const output = m.content;
-      const error = output.startsWith("[error") || output.startsWith("Error:") ? output : undefined;
+      if ((m.toolCallId && consumedToolIDs.has(m.toolCallId)) || consumedPositionalToolIndexes.has(messageIndex)) continue;
+      const output = m.toolResultArchived ? undefined : m.content;
+      const error = m.toolResultError || (output ? historyToolError(output) : undefined);
       items.push({
         kind: "tool",
         id: m.toolCallId || `${idPrefix}tool${seq}`,
@@ -287,6 +369,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         status: error ? "error" : "done",
         output,
         error,
+        dataArchived: m.toolResultArchived || undefined,
         isShell: (m.toolCallId || "").startsWith("shell-"),
       });
       seq++;
@@ -294,6 +377,51 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
   }
   return { items, seq };
+}
+
+function positionalToolResults(messages: HistoryMessage[]): Map<string, { message: HistoryMessage; index: number }> {
+  const out = new Map<string, { message: HistoryMessage; index: number }>();
+  const consumed = new Set<number>();
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+    const message = messages[messageIndex];
+    const toolCalls = message.role === "assistant" ? message.toolCalls ?? [] : [];
+    if (toolCalls.length === 0) continue;
+    let resultIndex = messageIndex + 1;
+    for (let callIndex = 0; callIndex < toolCalls.length; callIndex += 1) {
+      if (toolCalls[callIndex].id) continue;
+      let matched = false;
+      while (resultIndex < messages.length) {
+        const candidate = messages[resultIndex];
+        if (candidate.role !== "tool") break;
+        const candidateIndex = resultIndex;
+        resultIndex += 1;
+        if (candidate.toolCallId || consumed.has(candidateIndex)) continue;
+        consumed.add(candidateIndex);
+        out.set(positionalToolResultKey(messageIndex, callIndex), { message: candidate, index: candidateIndex });
+        matched = true;
+        break;
+      }
+      if (!matched) break;
+    }
+  }
+  return out;
+}
+
+function positionalToolResultKey(messageIndex: number, callIndex: number): string {
+  return `${messageIndex}:${callIndex}`;
+}
+
+function historyToolError(output: string): string | undefined {
+  const trimmed = output.trimStart();
+  if (
+    trimmed.startsWith("[error") ||
+    trimmed.startsWith("Error:") ||
+    trimmed.startsWith("error:") ||
+    trimmed.startsWith("blocked:")
+  ) {
+    return output;
+  }
+  return undefined;
 }
 
 function ensureAssistant(s: State): { items: Item[]; id: string; seq: number } {
@@ -315,14 +443,14 @@ function flushPendingUser(s: State): State {
   return {
     ...s,
     seq: s.seq + 1,
-    items: [...s.items, { kind: "user", id: `u${s.seq}`, text: s.pendingUser }],
+    items: [...s.items, { kind: "user", id: `u${s.seq}`, text: s.pendingUser, createdAt: Date.now() }],
     pendingUser: undefined,
   };
 }
 
 function applyEvent(s: State, e: WireEvent): State {
   if (s.discardTurn) {
-    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, currentAssistant: undefined, live: undefined };
+    if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, live: undefined };
     return s;
   }
   if (s.pendingUser !== undefined && e.kind !== "turn_done") {
@@ -341,14 +469,17 @@ function applyEvent(s: State, e: WireEvent): State {
       let cur: State = s;
       if (cur.pendingUser !== undefined) cur = flushPendingUser(cur);
       const { items, id, seq } = ensureAssistant(cur);
-      return { ...cur, items, currentAssistant: id, seq, live: { id, text: "", reasoning: "" }, running: true, turnActive: true, turnStartAt: Date.now(), turnTokens: 0, turnTotalTokens: 0, turnCost: 0 };
+      return { ...cur, items, currentAssistant: id, seq, live: { id, text: "", reasoning: "", reasoningComplete: false }, running: true, turnActive: true, pendingPrompt: false, cancelRequested: false, cancellable: true, turnStartAt: Date.now(), turnTokens: 0, turnTotalTokens: 0, turnCost: 0 };
     }
     case "text":
     case "reasoning": {
       const { items, id, seq } = ensureAssistant(s);
       const delta = e.text ?? e.reasoning ?? "";
-      const base = s.live?.id === id ? s.live : { id, text: "", reasoning: "" };
-      const live = e.kind === "text" ? { ...base, text: base.text + delta } : { ...base, reasoning: base.reasoning + delta };
+      const base = s.live?.id === id ? s.live : { id, text: "", reasoning: "", reasoningComplete: false };
+      const live =
+        e.kind === "text"
+          ? { ...base, text: base.text + delta, reasoningComplete: base.reasoning !== "" || base.reasoningComplete }
+          : { ...base, reasoning: base.reasoning + delta, reasoningComplete: false };
       return { ...s, items, live, currentAssistant: id, seq };
     }
     case "message": {
@@ -373,10 +504,17 @@ function applyEvent(s: State, e: WireEvent): State {
       if (idx >= 0) {
         const next = [...s.items];
         const it = next[idx];
-        if (it.kind === "tool") next[idx] = { ...it, name: t.name, args: t.args ? t.args : it.args, readOnly: t.readOnly, profile: t.profile ?? it.profile };
+        if (it.kind === "tool") {
+          const args = t.args ? t.args : it.args;
+          const fileDiff = fileDiffFromWire(t);
+          const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
+          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff };
+        }
         return { ...s, items: next };
       }
-      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args: t.args ?? "", readOnly: t.readOnly, status: "running", isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
+      const args = t.args ?? "";
+      const fileDiff = fileDiffFromWire(t);
+      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
     }
     case "tool_result": {
       const t = e.tool;
@@ -391,9 +529,24 @@ function applyEvent(s: State, e: WireEvent): State {
       }
       if (idx >= 0) {
         const it = next[idx];
-        if (it.kind === "tool") next[idx] = { ...it, status: t.err ? "error" : "done", output: t.output, error: t.err, truncated: t.truncated, durationMs: t.durationMs };
+        if (it.kind === "tool") {
+          // Archive immediately: collapsed cards only show tool name + command
+          // subject (from args). Drop output entirely; full data is loaded on
+          // demand via app.ToolResultForTab when the card is expanded.
+          const existing = it;
+          const summary = t.err ? undefined : existing.summary || summarize(existing.name, existing.args, t.output);
+          next[idx] = {
+            ...existing,
+            status: t.err ? "error" : "done",
+            output: t.output,
+            error: t.err,
+            truncated: t.truncated,
+            durationMs: t.durationMs,
+            summary,
+          };
+        }
       }
-      return { ...s, items: next };
+      return { ...s, items: compactArchivedToolItems(next) };
     }
     case "tool_progress": {
       const t = e.tool;
@@ -406,7 +559,9 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, items: next };
     }
     case "usage": {
-      const used = e.usage && s.context.window ? e.usage.promptTokens : s.context.used;
+      if (!countsTowardCurrentTurn(s)) return s;
+      const updateContextGauge = updatesContextGauge(e.usage);
+      const used = e.usage && s.context.window && updateContextGauge ? e.usage.promptTokens : s.context.used;
       const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
       const usageTokens = usageTotalTokens(e.usage);
       const turnTotalTokens = s.turnTotalTokens + usageTokens;
@@ -415,7 +570,8 @@ function applyEvent(s: State, e: WireEvent): State {
       const turnCost = s.turnCost + usageCost;
       const sessionCost = s.sessionCost + usageCost;
       const sessionCurrency = e.usage?.currency || s.sessionCurrency || "¥";
-      return { ...s, usage: e.usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
+      const usage = updateContextGauge ? e.usage : s.usage ?? e.usage;
+      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
     }
     case "notice":
       return { ...s, running: s.turnActive ? s.running : false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: e.level ?? "info", text: e.text ?? "" }] };
@@ -437,8 +593,14 @@ function applyEvent(s: State, e: WireEvent): State {
     }
     case "steer":
       return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `s${s.seq}`, level: "info", text: `↪ ${e.text ?? ""}` }] };
-    case "approval_request": return { ...s, approval: e.approval };
-    case "ask_request": return { ...s, ask: e.ask };
+    case "approval_request": {
+      if (s.cancelRequested) return s;
+      return { ...s, approval: e.approval, pendingPrompt: true, running: true, turnActive: true, cancellable: true };
+    }
+    case "ask_request": {
+      if (s.cancelRequested) return s;
+      return { ...s, ask: e.ask, pendingPrompt: true, running: true, turnActive: true, cancellable: true };
+    }
     case "turn_done": {
       if (s.pendingUser !== undefined) s = flushPendingUser(s);
       const finalized = s.items.map((it) => {
@@ -447,8 +609,8 @@ function applyEvent(s: State, e: WireEvent): State {
         if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
         return it;
       });
-      const items: Item[] = e.err ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }] : finalized;
-      return { ...s, items, live: undefined, running: false, turnActive: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
+      let items: Item[] = e.err ? [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }] : finalized;
+      return { ...s, items, live: undefined, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, approval: undefined, ask: undefined, seq: s.seq + 1 };
     }
     default: return s;
   }
@@ -461,8 +623,11 @@ export function reducer(s: State, a: Action): State {
       return {
         ...s,
         seq: seq + 1,
-        items: [...s.items, { kind: "user", id: `u${seq}`, text: a.text }],
+        items: [...s.items, { kind: "user", id: `u${seq}`, text: a.text, submitText: a.submitText, createdAt: Date.now() }],
         running: true,
+        pendingPrompt: false,
+        cancelRequested: false,
+        cancellable: true,
         turnStartAt: Date.now(),
         turnTokens: 0,
         turnTotalTokens: 0,
@@ -471,7 +636,8 @@ export function reducer(s: State, a: Action): State {
         discardTurn: false,
       };
     }
-    case "unsend": return { ...s, pendingUser: undefined, discardTurn: true, running: false, live: undefined };
+    case "unsend": return { ...s, pendingUser: undefined, discardTurn: true, running: false, pendingPrompt: false, cancelRequested: true, cancellable: false, approval: undefined, ask: undefined, live: undefined };
+    case "cancel_requested": return { ...s, pendingPrompt: false, cancelRequested: true, approval: undefined, ask: undefined, cancellable: s.running || s.turnActive };
     case "send_failed": {
       if (s.pendingUser === undefined) return s;
       let idx = -1;
@@ -481,18 +647,40 @@ export function reducer(s: State, a: Action): State {
       }
       const items = idx >= 0 ? s.items.map((it, i) => (i === idx ? { ...it, failed: true } : it)) : s.items;
       const notice: Item = { kind: "notice", id: `n${s.seq}`, level: "warn", text: a.error };
-      return { ...s, pendingUser: undefined, running: false, turnActive: false, live: undefined, seq: s.seq + 1, items: [...items, notice] };
+      return { ...s, pendingUser: undefined, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, live: undefined, seq: s.seq + 1, items: [...items, notice] };
     }
     case "backend_status": {
-      if (a.running === s.running) return s;
-      if (a.running) return { ...s, running: true, turnActive: true, turnStartAt: s.turnStartAt || Date.now() };
+      const pendingPrompt = Boolean(a.pendingPrompt);
+      const backgroundJobs = Math.max(0, a.backgroundJobs ?? s.backgroundJobs ?? 0);
+      const cancelRequested = Boolean(a.cancelRequested);
+      const foregroundRunning = foregroundRunningFromRuntimeMeta({ running: a.running, pendingPrompt, backgroundJobs, cancellable: a.cancellable });
+      const cancellable = foregroundRunning;
+      if (
+        foregroundRunning === s.running &&
+        pendingPrompt === s.pendingPrompt &&
+        backgroundJobs === s.backgroundJobs &&
+        cancelRequested === s.cancelRequested &&
+        cancellable === s.cancellable
+      ) return s;
+      if (foregroundRunning) {
+        return {
+          ...s,
+          running: true,
+          turnActive: true,
+          pendingPrompt,
+          backgroundJobs,
+          cancelRequested,
+          cancellable,
+          turnStartAt: s.turnStartAt || Date.now(),
+        };
+      }
       const finalized = s.items.map((it) => {
         if (it.kind === "assistant" && s.live && it.id === s.live.id) return { ...it, text: s.live.text, reasoning: s.live.reasoning, streaming: false };
         if (it.kind === "assistant" && it.streaming) return { ...it, streaming: false };
         if (it.kind === "tool" && it.status === "running") return { ...it, status: "stopped" as const };
         return it;
       });
-      return { ...s, items: finalized, running: false, turnActive: false, live: undefined, currentAssistant: undefined, approval: undefined, ask: undefined };
+      return { ...s, items: finalized, running: false, turnActive: false, pendingPrompt, backgroundJobs, cancelRequested, cancellable, live: undefined, currentAssistant: undefined, approval: undefined, ask: undefined };
     }
     case "meta": return sameMeta(s.meta, a.meta) ? s : { ...s, meta: a.meta };
     case "context": {
@@ -509,12 +697,12 @@ export function reducer(s: State, a: Action): State {
     case "message_action_done": return { ...s, messageAction: undefined };
     case "history": {
       const { items, seq } = historyMessagesToItems(a.messages, "h", s.seq);
-      return { ...s, items, seq };
+      return { ...s, items: compactArchivedToolItems(items), seq };
     }
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
-    case "clearApproval": return { ...s, approval: undefined };
-    case "clearAsk": return { ...s, ask: undefined };
-    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs };
+    case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false };
+    case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false };
+    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }
@@ -560,6 +748,11 @@ async function refreshMetaForTab(tabId: string, dispatchTo: (tabId: string, acti
   } catch {
     /* ignore */
   }
+}
+
+export function replayPendingPromptsForActiveTab(activeTabId: string | undefined, replay: () => Promise<void> = () => app.ReplayPendingPrompts()): void {
+  if (!activeTabId) return;
+  void replay().catch(() => {});
 }
 
 export function useController() {
@@ -658,17 +851,25 @@ export function useController() {
     return active.id;
   }, [activeTabFromBackend, loadSessionDataForTab]);
 
-  const reconcileTabRuntime = useCallback(async (tabId: string) => {
+  const reconcileTabRuntime = useCallback(async (tabId: string): Promise<TabMeta[] | undefined> => {
     const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
     const tab = tabs.find((candidate) => candidate.id === tabId);
-    if (!tab) return;
+    if (!tab) return undefined;
     const local = statesRef.current.get(tabId);
     const needsInitialLoad = !local?.meta;
-    const missedTurnDone = Boolean(local?.running && !tab.running);
-    dispatchTo(tabId, { type: "backend_status", running: Boolean(tab.running) });
+    const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
+    const missedTurnDone = Boolean(local?.running && !foregroundRunning);
+    dispatchTo(tabId, {
+      type: "backend_status",
+      running: foregroundRunning,
+      pendingPrompt: Boolean(tab.pendingPrompt),
+      backgroundJobs: tab.backgroundJobs ?? 0,
+      cancelRequested: Boolean(tab.cancelRequested),
+      cancellable: foregroundRunning,
+    });
     if (needsInitialLoad || missedTurnDone) {
       await loadSessionDataForTab(tabId, missedTurnDone);
-      return;
+      return tabs;
     }
     const [jobs, effort, balance] = await Promise.all([
       app.JobsForTab(tabId).catch(() => undefined),
@@ -678,6 +879,7 @@ export function useController() {
     if (jobs) dispatchTo(tabId, { type: "jobs", jobs: asArray(jobs) });
     if (effort) dispatchTo(tabId, { type: "effort", effort });
     if (balance) dispatchTo(tabId, { type: "balance", balance });
+    return tabs;
   }, [dispatchTo, loadSessionDataForTab]);
 
   useEffect(() => {
@@ -763,27 +965,36 @@ export function useController() {
     return () => window.clearTimeout(timer);
   }, [activeTabId, reconcileTabRuntime, activeState.running, activeState.turnActive]);
 
+  // Replay any pending approval/ask prompts when switching tabs, so a
+  // plan-mode session left awaiting confirmation rebuilds its modal (#4275).
+  useEffect(() => {
+    replayPendingPromptsForActiveTab(activeTabId);
+  }, [activeTabId]);
+
+  const sendToTab = useCallback((tabId: string, displayText: string, submitText = displayText) => {
+    if (!tabId) return;
+    const seq = getOrCreateState(statesRef.current, tabId).seq;
+    const display = displayText.trim();
+    const submit = submitText.trim();
+    dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
+    invalidateCache();
+    (display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit)).catch((error) => {
+      dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
+    });
+  }, [dispatchTo]);
+
   const send = useCallback((displayText: string, submitText = displayText) => {
-    const submitForTab = (tabId: string) => {
-      const seq = getOrCreateState(statesRef.current, tabId).seq;
-      dispatchTo(tabId, { type: "user", text: displayText, seq });
-      const display = displayText.trim();
-      const submit = submitText.trim();
-      (display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit)).catch((error) => {
-        dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
-      });
-    };
     const tabId = activeTabIdRef.current ?? activeTabId;
     if (tabId) {
-      submitForTab(tabId);
+      sendToTab(tabId, displayText, submitText);
       return;
     }
     void activeTabFromBackend().then((active) => {
       if (!active?.id) return;
       setActiveTabId(active.id);
-      submitForTab(active.id);
+      sendToTab(active.id, displayText, submitText);
     });
-  }, [activeTabFromBackend, activeTabId, dispatchTo]);
+  }, [activeTabFromBackend, activeTabId, sendToTab]);
 
   const runShell = useCallback((command: string) => {
     if (!activeTabId) return;
@@ -815,7 +1026,10 @@ export function useController() {
       }
       return text;
     }
-    if (tabId) app.CancelTab(tabId).catch(() => {});
+    if (tabId) {
+      dispatchTo(tabId, { type: "cancel_requested" });
+      app.CancelTab(tabId).catch(() => {});
+    }
     return undefined;
   }, [activeTabId, dispatchTo]);
 
@@ -865,25 +1079,37 @@ export function useController() {
 
   const newSession = useCallback(async () => {
     const tabId = activeTabId;
-    if (tabId) bumpCheckpointRefreshSeq(tabId);
+    if (tabId) {
+      bumpCheckpointRefreshSeq(tabId);
+      bumpSessionLoadSeq(tabId);
+    }
     try {
       await app.NewSession();
     } catch {
+      if (tabId) void loadSessionDataForTab(tabId);
       return; // backend refused (workspace starting / failed) — keep the transcript
     }
+    if (tabId) bumpSessionLoadSeq(tabId);
+    invalidateCache();
     if (tabId) dispatchTo(tabId, { type: "reset" });
-  }, [activeTabId, bumpCheckpointRefreshSeq, dispatchTo]);
+  }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab]);
 
   const clearSession = useCallback(async () => {
     const tabId = activeTabId;
-    if (tabId) bumpCheckpointRefreshSeq(tabId);
+    if (tabId) {
+      bumpCheckpointRefreshSeq(tabId);
+      bumpSessionLoadSeq(tabId);
+    }
     try {
       await app.ClearSession();
     } catch {
+      if (tabId) void loadSessionDataForTab(tabId);
       return;
     }
+    if (tabId) bumpSessionLoadSeq(tabId);
+    invalidateCache();
     if (tabId) dispatchTo(tabId, { type: "reset" });
-  }, [activeTabId, bumpCheckpointRefreshSeq, dispatchTo]);
+  }, [activeTabId, bumpCheckpointRefreshSeq, bumpSessionLoadSeq, dispatchTo, loadSessionDataForTab]);
 
   const listSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListSessions().catch(() => [])), []);
   const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions().catch(() => [])), []);
@@ -901,11 +1127,24 @@ export function useController() {
     void refreshCheckpoints(targetTabId);
   }, [activeTabId, dispatchTo, refreshCheckpoints, waitForTabReady]);
 
+  const openChannelSession = useCallback(async (path: string, tabId: string) => {
+    if (!tabId) return;
+    await waitForTabReady(tabId);
+    const messages = asArray(
+      await app.OpenChannelSessionForTab(tabId, path).catch(() => [] as HistoryMessage[]),
+    );
+    if (messages.length === 0) return;
+    dispatchTo(tabId, { type: "reset" });
+    dispatchTo(tabId, { type: "history", messages });
+    app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
+    void refreshCheckpoints(tabId);
+  }, [dispatchTo, refreshCheckpoints, waitForTabReady]);
+
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
-  const deleteSession = useCallback((path: string) => app.DeleteSession(path).catch(() => {}), []);
-  const restoreSession = useCallback((path: string) => app.RestoreSession(path).catch(() => {}), []);
-  const purgeTrashedSession = useCallback((path: string) => app.PurgeTrashedSession(path).catch(() => {}), []);
-  const renameSession = useCallback((path: string, title: string) => app.RenameSession(path, title).catch(() => {}), []);
+  const deleteSession = useCallback((path: string) => app.DeleteSession(path).catch(() => {}).finally(() => invalidateCache()), []);
+  const restoreSession = useCallback((path: string) => app.RestoreSession(path).catch(() => {}).finally(() => invalidateCache()), []);
+  const purgeTrashedSession = useCallback((path: string) => app.PurgeTrashedSession(path).catch(() => {}).finally(() => invalidateCache()), []);
+  const renameSession = useCallback((path: string, title: string) => app.RenameSession(path, title).catch(() => {}).finally(() => invalidateCache()), []);
 
   const refreshMeta = useCallback(async () => {
     if (!activeTabId) return;
@@ -978,9 +1217,9 @@ export function useController() {
   const forget = useCallback(async (name: string) => { await app.Forget(name).catch(() => {}); }, []);
   const saveDoc = useCallback(async (path: string, body: string) => { await app.SaveDoc(path, body).catch(() => {}); }, []);
 
-  const rewind = useCallback(async (turn: number, scope: string) => {
+  const rewind = useCallback(async (turn: number, scope: string): Promise<boolean> => {
     const sourceTabId = activeTabId;
-    if (!sourceTabId) return;
+    if (!sourceTabId) return false;
     const actionScope = (["fork", "summ-from", "summ-upto", "conversation", "code", "both"].includes(scope) ? scope : "both") as MessageActionScope;
     dispatchTo(sourceTabId, { type: "message_action_start", action: { turn, scope: actionScope } });
     dispatchTo(sourceTabId, { type: "local_notice", level: "info", text: messageActionBusyText(actionScope) });
@@ -997,7 +1236,7 @@ export function useController() {
         } else {
           await syncActiveTabFromBackend(true);
         }
-        return;
+        return true;
       }
 
       if (actionScope === "summ-from") await app.SummarizeFrom(turn);
@@ -1009,21 +1248,24 @@ export function useController() {
       if (messages.length) dispatchTo(sourceTabId, { type: "history", messages });
       dispatchTo(sourceTabId, { type: "context", context: await app.ContextUsageForTab(sourceTabId) });
       dispatchTo(sourceTabId, { type: "checkpoints", checkpoints: asArray(await app.CheckpointsForTab(sourceTabId)) });
+      return true;
     } catch {
       /* The controller emits a warning notice with the specific failure reason. */
+      return false;
     } finally {
       dispatchTo(sourceTabId, { type: "message_action_done" });
     }
   }, [activeTabId, dispatchTo, loadSessionDataForTab, syncActiveTabFromBackend, waitForTabReady]);
 
   // Tab management: switch preserves per-tab state; open creates it.
-  const switchTab = useCallback(async (tabId: string) => {
+  const switchTab = useCallback(async (tabId: string): Promise<TabMeta[] | undefined> => {
     addBreadcrumb("nav", `switch tab ${tabId}`);
     setActiveTabId(tabId);
     try {
       await app.SetActiveTab(tabId);
-      await reconcileTabRuntime(tabId);
+      return await reconcileTabRuntime(tabId);
     } catch { /* ignore */ }
+    return undefined;
   }, [reconcileTabRuntime]);
 
   const openProjectTab = useCallback(async (workspaceRoot: string, topicId: string): Promise<TabMeta> => {
@@ -1035,6 +1277,13 @@ export function useController() {
 
   const openGlobalTab = useCallback(async (topicId: string): Promise<TabMeta> => {
     const meta = await app.OpenGlobalTab(topicId);
+    setActiveTabId(meta.id);
+    await loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id));
+    return meta;
+  }, [loadSessionDataForTab]);
+
+  const openTopicSession = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath: string): Promise<TabMeta> => {
+    const meta = await app.OpenTopicSession(scope, workspaceRoot, topicId, sessionPath);
     setActiveTabId(meta.id);
     await loadSessionDataForTab(meta.id, !statesRef.current.has(meta.id));
     return meta;
@@ -1067,11 +1316,11 @@ export function useController() {
   return {
     state: activeState,
     activeTabId,
-    send, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
-    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
+    send, sendToTab, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
+    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc,
-    switchTab, openProjectTab, openGlobalTab, ensureBlankTab, closeTab, reorderTabs,
+    switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, closeTab, reorderTabs,
     syncActiveTab: syncActiveTabFromBackend,
   };
 }

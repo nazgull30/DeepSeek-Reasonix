@@ -497,14 +497,14 @@ func TestMainManagerFollowsTranscriptWithoutTopPadding(t *testing.T) {
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80, nil)
 	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
 	m = m0.(chatTUI)
-	m.wrappedLines = []string{"reasonix chat", "› /mcp"}
+	m.wrappedLines = []string{"reasonix", "› /mcp"}
 
 	out := ansi.Strip(m.renderTranscriptWithMainManager("Manage MCP servers\n1 servers"))
 	lines := strings.Split(out, "\n")
 	if len(lines) < 4 {
 		t.Fatalf("rendered manager area too short:\n%s", out)
 	}
-	if !strings.Contains(lines[0], "reasonix chat") || !strings.Contains(lines[1], "/mcp") {
+	if !strings.Contains(lines[0], "reasonix") || !strings.Contains(lines[1], "/mcp") {
 		t.Fatalf("transcript lines should stay above manager:\n%s", out)
 	}
 	if strings.TrimSpace(lines[2]) != "" {
@@ -512,6 +512,38 @@ func TestMainManagerFollowsTranscriptWithoutTopPadding(t *testing.T) {
 	}
 	if !strings.Contains(lines[3], "Manage MCP servers") {
 		t.Fatalf("manager should follow transcript immediately, got line 3 %q in:\n%s", lines[3], out)
+	}
+}
+
+func TestMarkdownDividerFitsTranscriptContentWidth(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80, nil)
+	m0, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = m0.(chatTUI)
+
+	wantW := transcriptContentWidth(80, false)
+	if m.viewport.Width() != wantW {
+		t.Fatalf("viewport width = %d, want transcript content width %d", m.viewport.Width(), wantW)
+	}
+	rule := strings.TrimRight(m.renderer.Render("---"), "\n")
+	lines := strings.Split(wrapTranscript(rule, m.viewport.Width()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("markdown divider wrapped into %d lines at width %d: %q", len(lines), m.viewport.Width(), lines)
+	}
+	if w := visibleWidth(lines[0]); w != m.viewport.Width() {
+		t.Fatalf("markdown divider width = %d, want %d: %q", w, m.viewport.Width(), lines[0])
+	}
+}
+
+func TestTranscriptContentWidthReservesScrollbarColumn(t *testing.T) {
+	if got := transcriptContentWidth(80, false); got != 79 {
+		t.Fatalf("transcriptContentWidth(80, false) = %d, want 79", got)
+	}
+	if got := transcriptContentWidth(80, true); got != 80 {
+		t.Fatalf("transcriptContentWidth(80, true) = %d, want 80", got)
+	}
+	if got := transcriptContentWidth(0, false); got != 1 {
+		t.Fatalf("transcriptContentWidth(0, false) = %d, want 1", got)
 	}
 }
 
@@ -863,6 +895,7 @@ func isolateUserConfig(t *testing.T) {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("AppData", filepath.Join(root, "AppData")) // os.UserConfigDir reads AppData on Windows
 	t.Chdir(root)
@@ -1554,6 +1587,27 @@ func TestSlashQuitExit(t *testing.T) {
 		msg := got()
 		if _, ok := msg.(tea.QuitMsg); !ok {
 			t.Errorf("%s cmd should produce QuitMsg, got %T", cmd, msg)
+		}
+	}
+}
+
+func TestSlashMigrateShowsProgress(t *testing.T) {
+	isolateCLIConfigHome(t)
+	m := newTestChatTUI()
+
+	if cmd := m.runSlashCommand("/migrate"); cmd != nil {
+		t.Fatal("/migrate should run locally without returning a command")
+	}
+	out := strings.Join(m.transcript, "\n")
+	for _, want := range []string{
+		"/migrate",
+		"migration rescue: checking legacy config and credentials",
+		"migration rescue: scanning legacy memory",
+		"migration rescue: scanning legacy sessions",
+		"migration rescue complete:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in transcript:\n%s", want, out)
 		}
 	}
 }

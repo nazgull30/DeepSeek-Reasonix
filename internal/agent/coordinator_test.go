@@ -195,6 +195,32 @@ func TestCoordinatorPlannerUsesReadOnlyResearchTools(t *testing.T) {
 	}
 }
 
+func TestCoordinatorSetReasoningLanguageClearsPlannerAgent(t *testing.T) {
+	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "1. inspect the narrow path"},
+		{Type: provider.ChunkDone},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{ReasoningLanguage: "zh"}, event.Discard)
+	coord := NewCoordinator(planner, NewSession("planner-sys"), nil, tool.NewRegistry(), Options{ReasoningLanguage: "zh"}, executor, 0, event.Discard, nil)
+	coord.SetReasoningLanguage("auto")
+
+	if err := coord.Run(context.Background(), "plan a change"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := lastUser(planner.requests[0]); strings.Contains(got, "<reasoning-language>") {
+		t.Fatalf("planner should clear stale reasoning language after live auto update, got %q", got)
+	}
+	if got := lastUser(exec.requests[0]); strings.Contains(got, "<reasoning-language>") {
+		t.Fatalf("executor should clear stale reasoning language after live auto update, got %q", got)
+	}
+}
+
 func TestCoordinatorPlannerMaxStepsUsesPlannerConfigKey(t *testing.T) {
 	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
 		{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"REASONIX.md"}`}},
@@ -379,4 +405,51 @@ func BenchmarkPlannerToolRegistry(b *testing.B) {
 			b.Fatal("planner registry should retain read-only research tools")
 		}
 	}
+}
+
+func TestCoordinatorSetPlanModePropagates(t *testing.T) {
+	prov := &mockProvider{name: "planner", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "plan"},
+		{Type: provider.ChunkDone},
+	}}
+	plannerSess := NewSession("planner-sys")
+	plannerReg := tool.NewRegistry()
+	plannerReg.Add(coordinatorTestTool{name: "read_file", readOnly: true})
+	plannerTools := PlannerToolRegistry(plannerReg)
+
+	exec := New(nil, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+
+	coord := NewCoordinator(prov, plannerSess, nil, plannerTools, Options{MaxSteps: 2}, exec, 0, event.Discard, nil)
+
+	// Both should start with planMode=false
+	if coord.plannerAgent.planMode.Load() {
+		t.Error("planner should start with planMode=false")
+	}
+	if coord.executor.planMode.Load() {
+		t.Error("executor should start with planMode=false")
+	}
+
+	// SetPlanMode(true) should propagate to both
+	coord.SetPlanMode(true)
+	if !coord.plannerAgent.planMode.Load() {
+		t.Error("planner should have planMode=true after SetPlanMode(true)")
+	}
+	if !coord.executor.planMode.Load() {
+		t.Error("executor should have planMode=true after SetPlanMode(true)")
+	}
+
+	// SetPlanMode(false) should propagate to both
+	coord.SetPlanMode(false)
+	if coord.plannerAgent.planMode.Load() {
+		t.Error("planner should have planMode=false after SetPlanMode(false)")
+	}
+	if coord.executor.planMode.Load() {
+		t.Error("executor should have planMode=false after SetPlanMode(false)")
+	}
+}
+
+func TestCoordinatorSetPlanModeNilSafety(t *testing.T) {
+	var c *Coordinator
+	c.SetPlanMode(true)  // should not panic
+	c.SetPlanMode(false) // should not panic
 }

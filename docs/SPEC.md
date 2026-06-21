@@ -40,7 +40,7 @@ reasonix/
     ├── provider/            # Provider interface + types + kind→factory registry
     │   └── openai/          # OpenAI-compatible impl; init() registers "openai"
     ├── tool/                # Tool interface + Registry
-    │   └── builtin/         # read_file/write_file/edit_file/bash/ls/glob/grep
+    │   └── builtin/         # read_file/write_file/edit_file/move_file/bash/ls/glob/grep
     ├── permission/          # per-call Policy: allow/ask/deny rules → Decision
     ├── command/             # custom slash commands loaded from .reasonix/commands/*.md
     ├── plugin/              # stdio JSON-RPC (MCP) client; adapts remote tools
@@ -252,7 +252,9 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 - **Rule syntax.** A rule is `Tool` (matches any call in that tool family) or
   `Tool(specifier)` (matches when the call's *subject* matches the specifier).
   Bash and file mutation approvals use Claude Code-style families such as
-  `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`. Legacy
+  `Bash(npm run build)`, `Bash(npm run test:*)`, and `Edit(docs/**)`. Built-in
+  file mutations include writes, edits, notebook edits, symbol/range deletes,
+  and `move_file` renames/moves. Legacy
   lowercase tool IDs and `tool=literal` rules still load for compatibility. The
   `:*` suffix marks a Bash command-prefix approval; generated prefix rules also
   reject later commands that introduce shell operators, so `Bash(go test:*)`
@@ -308,9 +310,22 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   stops it, or the safety continuation limit is reached. Blocked-state matching
   is normalized for casing, whitespace, and punctuation so minor wording drift
   does not reset the audit; restarting a goal begins a fresh blocked audit.
-  `/goal clear` removes it. Switching into plan/normal mode clears the active
-  goal in the desktop UI so the collaboration mode remains one of the three
-  choices, while the underlying tool approval posture is preserved.
+  Goals that look like long-horizon research, debugging, optimization, or
+  implementation work automatically add an AutoResearch protocol to the same
+  transient active-goal user block. AutoResearch is a Goal strategy, not a
+  standalone global skill: it writes project-local state under
+  `.reasonix/autoresearch/YYYYMMDD-HHMMSS-slug/` and keeps dynamic run state out
+  of `REASONIX.md`, `AGENTS.md`, project memory, tool schemas, and the
+  cache-stable system prompt. `/goal --research <objective>` forces that
+  strategy; `/goal --simple <objective>` forces lightweight Goal. Outside goal
+  mode, an ordinary prompt with a very strong AutoResearch signal is upgraded by
+  the host into the equivalent of `/goal --research <original prompt>`; the
+  ordinary-prompt classifier is intentionally stricter than `/goal`'s internal
+  classification so weak words such as "long term", "optimize", "research", or
+  "verify" do not create durable task state by themselves. `/goal clear` removes
+  the active goal. Switching into plan/normal mode clears the active goal in the
+  desktop UI so the collaboration mode remains one of the three choices, while
+  the underlying tool approval posture is preserved.
 
 | Tool approval posture | Tool approvals | Plan approval | `ask` questions |
 | --- | --- | --- | --- |
@@ -320,7 +335,7 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 | Approved-plan execution window | Approved plan's tool calls auto-allowed unless denied | Future plans still wait | Waits for user |
 
 Out of the box (`mode = "ask"`, no rules) `reasonix run` behaves exactly as before
-(writers resolve `Ask`→allow with no TTY), while `reasonix chat` now prompts before
+(writers resolve `Ask`→allow with no TTY), while `reasonix` now prompts before
 each writer/bash call. `deny` rules harden both modes.
 
 ### 3.8 Slash commands (`internal/command`)
@@ -333,7 +348,7 @@ The chat TUI accepts `/command` input. Three kinds share one dispatch:
   confirmation, then discards the current context without saving it; it does not
   delete project memory.
 - **Custom commands** are Markdown files under `.reasonix/commands/` (project) and
-  `reasonix/commands/` in your OS config dir (user; see §5); the project dir overrides the user dir on a
+  the user config dir, e.g. `~/.reasonix/commands/` on macOS/Linux; the project dir overrides the user dir on a
   name clash. A file `review.md` becomes `/review`; a subdirectory namespaces it
   (`git/commit.md` → `/git:commit`). Invoking one renders its body and sends the
   result as the next user turn.
@@ -429,13 +444,18 @@ type Chunk struct {
 ## 5. Configuration (TOML)
 
 Resolution order: **flag > project `./reasonix.toml` > the user config file
-> built-in defaults**. The user config lives in your OS config dir — `~/.config/reasonix/`
-on Linux, `~/Library/Application Support/reasonix/` on macOS, `%AppData%\reasonix\` on
-Windows. Secrets come from the environment via `api_key_env` and
-are never stored in config files. A `.env` in the working directory is loaded if
-present. Step-limit preferences usually belong in the user config; project
-`reasonix.toml` should override them only when the repository needs shared
-runtime bounds.
+> built-in defaults**. Starting with **Reasonix v1.8.1**, the user config lives
+at `~/.reasonix/config.toml` on macOS/Linux and
+`%AppData%\reasonix\config.toml` on Windows. See
+[Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
+Secrets come from the environment via `api_key_env` and are never stored in
+config files. `credentials_store = "auto"` prefers the OS credential store and
+falls back to the file under Reasonix home. A `.env` in the working directory is
+loaded if present for compatibility and explicit per-project overrides, but
+Reasonix-created API keys are written to the configured credential store rather
+than a project `.env`. Step-limit preferences usually belong in the user config;
+project `reasonix.toml` should override them only when the repository needs
+shared runtime bounds.
 
 ```toml
 default_model = "deepseek"   # provider name (→ its default model) or "provider/model"
@@ -496,8 +516,8 @@ allow = ["Bash(go test:*)", "Bash(git status:*)"]  # never prompted
 ask   = []                                 # force a prompt even if otherwise allowed
 
 [sandbox]
-# workspace_root = ""          # file-writers confined here; empty = cwd (writes stay in-project)
-# allow_write    = ["/tmp"]    # extra dirs write_file/edit_file/multi_edit may modify
+# workspace_root = ""          # file-writers confined here; empty = cwd
+# allow_write    = ["/tmp"]    # extra dirs write_file/edit_file/multi_edit/move_file may modify
 
 [[plugins]]
 name    = "example"            # type defaults to "stdio"
@@ -530,14 +550,15 @@ Reasonix unchanged.
 
 `[sandbox]` is the *enforcement* layer beneath permissions (which are *policy*).
 Phase 0 confines the file-writing built-ins (`write_file`, `edit_file`,
-`multi_edit`) to `workspace_root` (default cwd) plus `allow_write`: a write whose
-target — resolved to an absolute, symlink-free path so a symlinked dir or `..`
-cannot tunnel out — falls outside every root is refused, and the error is fed
-back to the model. Confinement is on by default (root = cwd), so edits stay in
-the project; reads are unrestricted. `bash` is itself jailed on macOS by default
-(`[sandbox] bash = "enforce"`, Seatbelt): each command runs under sandbox-exec
-allowed to write only the same roots (+ temp and toolchain caches) and to reach
-the network only when `network = true`. Unsupported platforms fall back to
+`multi_edit`, `move_file`) to `workspace_root` (default cwd), the Reasonix user
+config dir, plus `allow_write`: a write whose target — resolved to an absolute,
+symlink-free path so a symlinked dir or `..` cannot tunnel out — falls outside
+every root is refused, and the error is fed back to the model. Confinement is on
+by default (root = cwd), so edits stay in the project while the agent can still
+update its own global config; reads are unrestricted. `bash` is itself jailed on
+macOS by default (`[sandbox] bash = "enforce"`, Seatbelt): each command runs
+under sandbox-exec allowed to write only the same roots (+ temp and toolchain
+caches) and to reach the network only when `network = true`. Unsupported platforms fall back to
 running unconfined. The escape-prompt and Linux support are Phase 1's remainder (§9).
 
 ## 6. Error Handling

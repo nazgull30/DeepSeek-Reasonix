@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -108,6 +110,9 @@ func TestDesktopPreferencesAreSeparateFromCLI(t *testing.T) {
 	if err := c.SetDesktopAppearance("dark", "graphite"); err != nil {
 		t.Fatalf("SetDesktopAppearance: %v", err)
 	}
+	if err := c.SetDesktopLayoutStyle("workbench"); err != nil {
+		t.Fatalf("SetDesktopLayoutStyle: %v", err)
+	}
 	if err := c.SetDesktopStatusBarStyle("text"); err != nil {
 		t.Fatalf("SetDesktopStatusBarStyle: %v", err)
 	}
@@ -133,11 +138,50 @@ func TestDesktopPreferencesAreSeparateFromCLI(t *testing.T) {
 	if got := c.DesktopThemeStyle(); got != "graphite" {
 		t.Fatalf("desktop theme style = %q, want graphite", got)
 	}
+	if got := c.DesktopLayoutStyle(); got != "workbench" {
+		t.Fatalf("desktop layout style = %q, want workbench", got)
+	}
 	if got := c.DesktopStatusBarStyle(); got != "text" {
 		t.Fatalf("desktop status bar style = %q, want text", got)
 	}
 	if got, want := c.DesktopStatusBarItems(), []string{"model", "balance", "cache"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("desktop status bar items = %v, want %v", got, want)
+	}
+}
+
+func TestDesktopLayoutStyleNormalizes(t *testing.T) {
+	if got := Default().DesktopLayoutStyle(); got != "workbench" {
+		t.Fatalf("default desktop layout style = %q, want workbench", got)
+	}
+	for _, tt := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "classic", false},
+		{"classic", "classic", false},
+		{" workbench ", "workbench", false},
+		{"workspace", "workbench", false},
+		{"creation", "creation", false},
+		{" Creation ", "creation", false},
+		{"later", "workbench", true},
+	} {
+		c := Default()
+		if err := c.SetDesktopLayoutStyle(tt.in); (err != nil) != tt.wantErr {
+			t.Fatalf("SetDesktopLayoutStyle(%q) err = %v, wantErr %v", tt.in, err, tt.wantErr)
+		}
+		if got := c.DesktopLayoutStyle(); got != tt.want {
+			t.Fatalf("DesktopLayoutStyle(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+
+	c := Default()
+	c.Desktop.ThemeStyle = "workbench"
+	if got := c.DesktopLayoutStyle(); got != "workbench" {
+		t.Fatalf("legacy desktop theme_style=workbench layout = %q, want workbench", got)
+	}
+	if got := c.DesktopThemeStyle(); got != "" {
+		t.Fatalf("legacy desktop theme_style=workbench theme style = %q, want empty", got)
 	}
 }
 
@@ -171,6 +215,11 @@ func TestDesktopStatusBarItemsNormalizeAndValidate(t *testing.T) {
 	if got, want := Default().DesktopStatusBarItems(), DefaultDesktopStatusBarItems(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("default desktop status bar items = %v, want %v", got, want)
 	}
+	for _, id := range []string{"workspace", "git_branch"} {
+		if !slices.Contains(DefaultDesktopStatusBarItems(), id) {
+			t.Fatalf("default desktop status bar items must include configurable item %q", id)
+		}
+	}
 
 	c := Default()
 	c.Desktop.StatusBarItems = []string{" balance ", "cache", "cache", "unknown", "model"}
@@ -184,6 +233,14 @@ func TestDesktopStatusBarItemsNormalizeAndValidate(t *testing.T) {
 	}
 	if got, want := c.DesktopStatusBarItems(), []string{"balance", "cache", "model"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("saved desktop status bar items = %v, want %v", got, want)
+	}
+
+	c = Default()
+	if err := c.SetDesktopStatusBarItems([]string{"workspace", "git_branch", "model"}); err != nil {
+		t.Fatalf("SetDesktopStatusBarItems workspace metadata: %v", err)
+	}
+	if got, want := c.DesktopStatusBarItems(), []string{"workspace", "git_branch", "model"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("saved workspace metadata status bar items = %v, want %v", got, want)
 	}
 
 	if err := c.SetDesktopStatusBarItems(nil); err != nil {
@@ -471,6 +528,84 @@ func TestResolveModelPreservesProviderEffort(t *testing.T) {
 	}
 }
 
+func TestEffectiveVisionForOfficialMimoModels(t *testing.T) {
+	c := Default()
+	c.Desktop.ProviderAccess = []string{"mimo-api"}
+	normalizeDesktopOfficialProviderAccess(c)
+
+	pro, ok := c.ResolveModel("mimo-api/mimo-v2.5-pro")
+	if !ok {
+		t.Fatal("ResolveModel did not find mimo-api/mimo-v2.5-pro")
+	}
+	if EffectiveVision(pro) {
+		t.Fatalf("mimo-v2.5-pro should remain text-only by default")
+	}
+
+	vision, ok := c.ResolveModel("mimo-api/mimo-v2.5")
+	if !ok {
+		t.Fatal("ResolveModel did not find mimo-api/mimo-v2.5")
+	}
+	if !EffectiveVision(vision) {
+		t.Fatalf("mimo-v2.5 on the official MiMo API should enable vision")
+	}
+
+	omni, ok := c.ResolveModel("mimo-api/mimo-v2-omni")
+	if !ok {
+		t.Fatal("ResolveModel did not find mimo-api/mimo-v2-omni")
+	}
+	if !EffectiveVision(omni) {
+		t.Fatalf("mimo-v2-omni on the official MiMo API should enable vision")
+	}
+}
+
+func TestEffectiveVisionDoesNotInferCustomMimoProxy(t *testing.T) {
+	custom := &ProviderEntry{
+		Name:    "mimo-proxy",
+		Kind:    "openai",
+		BaseURL: "https://proxy.example.com/v1",
+		Model:   "mimo-v2.5",
+	}
+	if EffectiveVision(custom) {
+		t.Fatalf("custom MiMo proxy should require explicit vision=true")
+	}
+	custom.Vision = true
+	if !EffectiveVision(custom) {
+		t.Fatalf("explicit vision=true should still enable custom providers")
+	}
+}
+
+func TestEffectiveVisionUsesPerModelVisionList(t *testing.T) {
+	c := &Config{Providers: []ProviderEntry{{
+		Name:         "custom",
+		Kind:         "openai",
+		BaseURL:      "https://proxy.example.com/v1",
+		Models:       []string{"text-only", "qwen-vl-plus"},
+		Default:      "text-only",
+		VisionModels: []string{"qwen-vl-plus"},
+	}}}
+
+	textOnly, ok := c.ResolveModel("custom/text-only")
+	if !ok {
+		t.Fatal("ResolveModel did not find custom/text-only")
+	}
+	if EffectiveVision(textOnly) {
+		t.Fatalf("text-only should remain text-only when not listed in vision_models")
+	}
+
+	vision, ok := c.ResolveModel("custom/qwen-vl-plus")
+	if !ok {
+		t.Fatal("ResolveModel did not find custom/qwen-vl-plus")
+	}
+	if !EffectiveVision(vision) {
+		t.Fatalf("model listed in vision_models should enable image input")
+	}
+
+	textOnly.Vision = true
+	if !EffectiveVision(textOnly) {
+		t.Fatalf("provider-level vision=true should still enable every selected model")
+	}
+}
+
 func TestRemoveProvider(t *testing.T) {
 	c := Default()
 	c.Agent.PlannerModel = "deepseek-pro"
@@ -669,53 +804,6 @@ func TestAutoStartPlugins(t *testing.T) {
 	}
 }
 
-func TestCodegraphDefaultEnabledForUpgrades(t *testing.T) {
-	c := Default()
-	if !c.Codegraph.Enabled {
-		t.Fatal("default codegraph enabled = false; existing configs without a [codegraph] section would lose it on upgrade")
-	}
-	if !c.Codegraph.AutoInstall {
-		t.Fatal("default codegraph auto_install = false, want true")
-	}
-	if c.Codegraph.Tier != "" {
-		t.Fatalf("default codegraph tier = %q, want unset (background by default)", c.Codegraph.Tier)
-	}
-}
-
-func TestBuiltInMCPDefaultsEnableOnlyTime(t *testing.T) {
-	c := Default()
-	if !c.BuiltInMCP.TimeEnabled || c.BuiltInMCP.Context7Enabled {
-		t.Fatalf("built-in MCP defaults = %+v, want time enabled and context7 disabled", c.BuiltInMCP)
-	}
-}
-
-func TestLoadForEditPreservesCodegraphWithoutSection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "reasonix.toml")
-	if err := os.WriteFile(path, []byte("default_model = \"x\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if c := LoadForEdit(path); !c.Codegraph.Enabled {
-		t.Fatal("a config omitting [codegraph] disabled codegraph; an upgrade must keep it on")
-	}
-}
-
-func TestLoadFirstRunDisablesCodegraph(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("AppData", t.TempDir())
-	t.Chdir(t.TempDir())
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Codegraph.Enabled {
-		t.Fatal("first run (no config file anywhere) left codegraph enabled; new users should start without it")
-	}
-}
-
 func TestPluginResolvedTierDefaultsToBackground(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -864,6 +952,11 @@ func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
 	if !strings.Contains(string(userBody), "[desktop]") {
 		t.Fatalf("user config should include desktop preferences:\n%s", userBody)
 	}
+	if info, err := os.Stat(userPath); err != nil {
+		t.Fatalf("stat user config: %v", err)
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("user config mode = %o, want 600", info.Mode().Perm())
+	}
 
 	projectPath := filepath.Join(t.TempDir(), "reasonix.toml")
 	if err := c.SaveTo(projectPath); err != nil {
@@ -875,6 +968,227 @@ func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
 	}
 	if strings.Contains(string(projectBody), "[desktop]") || strings.Contains(string(projectBody), "close_behavior") {
 		t.Fatalf("project config should not include desktop preferences:\n%s", projectBody)
+	}
+	if info, err := os.Stat(projectPath); err != nil {
+		t.Fatalf("stat project config: %v", err)
+	} else if runtime.GOOS != "windows" && info.Mode().Perm() != 0o644 {
+		t.Fatalf("project config mode = %o, want 644", info.Mode().Perm())
+	}
+}
+
+func TestLoadForRootKeepsOfficialProviderAliasesDistinct(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+config_version = 2
+default_model = "deepseek/deepseek-v4-flash"
+
+[desktop]
+provider_access = ["deepseek"]
+
+[[providers]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+api_key_env = "USER_DEEPSEEK_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+api_key_env = "PROJECT_DEEPSEEK_KEY"
+effort = "max"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	userProvider, ok := cfg.Provider("deepseek")
+	if !ok {
+		t.Fatalf("user deepseek provider missing: %+v", cfg.Providers)
+	}
+	if userProvider.APIKeyEnv != "USER_DEEPSEEK_KEY" {
+		t.Fatalf("deepseek provider = %+v, want user provider preserved", userProvider)
+	}
+	projectProvider, ok := cfg.Provider("deepseek-flash")
+	if !ok {
+		t.Fatalf("project deepseek-flash provider missing: %+v", cfg.Providers)
+	}
+	if projectProvider.APIKeyEnv != "PROJECT_DEEPSEEK_KEY" || projectProvider.Effort != "max" {
+		t.Fatalf("deepseek-flash provider = %+v, want project provider preserved", projectProvider)
+	}
+}
+
+func TestLoadForRootKeepsUserProviderOverSameNamedProjectProvider(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://global.example/v1"
+model = "global-model"
+api_key_env = "GLOBAL_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = "PROJECT_SHARED_KEY"
+
+[[providers]]
+name = "project-only"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-only-model"
+api_key_env = "PROJECT_ONLY_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	shared, ok := cfg.Provider("shared")
+	if !ok {
+		t.Fatalf("shared provider missing: %+v", cfg.Providers)
+	}
+	if shared.BaseURL != "https://global.example/v1" || shared.APIKeyEnv != "GLOBAL_SHARED_KEY" || shared.Model != "global-model" {
+		t.Fatalf("shared provider = %+v, want global provider to win over project provider", shared)
+	}
+	if _, ok := cfg.Provider("project-only"); !ok {
+		t.Fatalf("project-only provider missing: %+v", cfg.Providers)
+	}
+}
+
+func TestSaveForRootPreservesShadowedProjectProvider(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://global.example/v1"
+model = "global-model"
+api_key_env = "GLOBAL_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+[[providers]]
+name = "shared"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = "PROJECT_SHARED_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	if err := cfg.SaveForRoot(root); err != nil {
+		t.Fatalf("SaveForRoot: %v", err)
+	}
+	var saved Config
+	if _, err := toml.DecodeFile(projectPath, &saved); err != nil {
+		t.Fatalf("saved project config does not parse: %v", err)
+	}
+	shared, ok := saved.Provider("shared")
+	if !ok {
+		t.Fatalf("saved project provider missing: %+v", saved.Providers)
+	}
+	if shared.BaseURL != "https://project.example/v1" || shared.APIKeyEnv != "PROJECT_SHARED_KEY" {
+		t.Fatalf("saved provider = %+v, want original project provider", shared)
+	}
+}
+
+func TestSaveForRootDoesNotWriteUserProvidersIntoProjectConfig(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	userPath := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(userPath, []byte(`
+config_version = 2
+
+[[providers]]
+name = "global"
+kind = "openai"
+base_url = "https://global.example/v1"
+model = "global-model"
+api_key_env = "GLOBAL_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectPath := filepath.Join(root, "reasonix.toml")
+	if err := os.WriteFile(projectPath, []byte(`
+config_version = 2
+default_model = "project-local/project-model"
+
+[[providers]]
+name = "project-local"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = "PROJECT_KEY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(root)
+	if err != nil {
+		t.Fatalf("LoadForRoot: %v", err)
+	}
+	if _, ok := cfg.Provider("global"); !ok {
+		t.Fatal("runtime config should include user provider before saving")
+	}
+	if _, ok := cfg.Provider("project-local"); !ok {
+		t.Fatal("runtime config should include project provider before saving")
+	}
+	if err := cfg.SaveForRoot(root); err != nil {
+		t.Fatalf("SaveForRoot: %v", err)
+	}
+
+	var got Config
+	if _, err := toml.DecodeFile(projectPath, &got); err != nil {
+		t.Fatalf("saved project config does not parse: %v", err)
+	}
+	if _, ok := got.Provider("global"); ok {
+		t.Fatalf("user provider leaked into project config: %+v", got.Providers)
+	}
+	if _, ok := got.Provider("project-local"); !ok {
+		t.Fatalf("project provider missing after save: %+v", got.Providers)
 	}
 }
 

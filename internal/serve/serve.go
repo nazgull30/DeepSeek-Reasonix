@@ -24,6 +24,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 )
@@ -34,11 +35,12 @@ var indexHTML []byte
 // Server wires a controller to its HTTP surface. The Broadcaster must be the
 // same sink the controller was constructed with, so events reach SSE clients.
 type Server struct {
-	mu        sync.RWMutex // guards ctrl, which switchModel swaps at runtime
-	ctrl      *control.Controller
-	bc        *Broadcaster
-	titleProv provider.Provider // lightweight flash provider for session titles
-	titles    *titleCache
+	mu         sync.RWMutex // guards ctrl, which switchModel swaps at runtime
+	ctrl       *control.Controller
+	bc         *Broadcaster
+	titleProv  provider.Provider // lightweight flash provider for session titles
+	titlePrice *provider.Pricing
+	titles     *titleCache
 }
 
 // New builds a Server. bc must be the controller's event sink.
@@ -79,6 +81,7 @@ func (s *Server) initTitleProvider() {
 		return
 	}
 	s.titleProv = prov
+	s.titlePrice = entry.Price
 }
 
 // switchModel rebuilds the controller with a new model, carrying over the
@@ -356,6 +359,10 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trimmed := strings.TrimSpace(body.Input)
+	if strings.HasPrefix(trimmed, "!") {
+		http.Error(w, "shell commands are unavailable over HTTP", http.StatusForbidden)
+		return
+	}
 	// Intercept /model <ref> for runtime model switching (the controller's
 	// Submit path only lists models — switching is frontend-specific).
 	if strings.HasPrefix(trimmed, "/model ") {
@@ -381,7 +388,7 @@ func (s *Server) submit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.ctl().Submit(body.Input)
+	s.ctl().SubmitHTTP(body.Input)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -709,16 +716,49 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing path", http.StatusBadRequest)
 		return
 	}
+	dir := s.ctl().SessionDir()
+	if dir == "" {
+		http.Error(w, "sessions disabled", http.StatusBadRequest)
+		return
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		http.Error(w, "invalid session dir", http.StatusBadRequest)
+		return
+	}
+	realDir, err := filepath.EvalSymlinks(absDir)
+	if err != nil {
+		http.Error(w, "invalid session dir", http.StatusBadRequest)
+		return
+	}
+	absPath, err := filepath.Abs(strings.TrimSpace(body.Path))
+	if err != nil || filepath.Ext(absPath) != ".jsonl" {
+		http.Error(w, "invalid session path", http.StatusBadRequest)
+		return
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		http.Error(w, "invalid session path", http.StatusBadRequest)
+		return
+	}
+	if realPath == realDir || !strings.HasPrefix(realPath, realDir+string(os.PathSeparator)) {
+		http.Error(w, "path outside session dir", http.StatusForbidden)
+		return
+	}
+	if agent.IsCleanupPending(realPath) {
+		http.Error(w, "session is pending cleanup", http.StatusBadRequest)
+		return
+	}
 	// Snapshot the current session before switching away.
 	if err := s.ctl().Snapshot(); err != nil {
 		slog.Warn("serve: snapshot before resume", "err", err)
 	}
-	loaded, err := agent.LoadSession(body.Path)
+	loaded, err := agent.LoadSession(realPath)
 	if err != nil {
 		http.Error(w, "load session: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.ctl().Resume(loaded, body.Path)
+	s.ctl().Resume(loaded, realPath)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -818,13 +858,19 @@ func (s *Server) generateTitle(ctx context.Context, firstMsg string) string {
 		return ""
 	}
 	var text strings.Builder
+	var usage *provider.Usage
 	for chunk := range ch {
 		switch chunk.Type {
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
+		case provider.ChunkUsage:
+			// Title usage is intentionally not broadcast on the shared chat SSE stream.
 		case provider.ChunkError:
 			return ""
 		}
+	}
+	if usage != nil && usage.TotalTokens > 0 && s.bc != nil {
+		s.bc.Emit(event.Event{Kind: event.Usage, Usage: usage, Pricing: s.titlePrice, UsageSource: event.UsageSourceTitle})
 	}
 	title := strings.TrimSpace(text.String())
 	if len(title) >= 2 && ((title[0] == '"' && title[len(title)-1] == '"') || (title[0] == '\'' && title[len(title)-1] == '\'')) {
@@ -860,6 +906,9 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		if agent.IsCleanupPending(path) {
+			continue
+		}
 		name := strings.TrimSuffix(e.Name(), ".jsonl")
 		entry := sessionEntry{Name: name, Path: path, Current: filepath.Clean(path) == current}
 		if first, turns := previewSessionFile(path); turns > 0 {
@@ -922,27 +971,60 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	destroy := s.ctl().BeginDestroySession(abs)
-	if err := os.Remove(abs); err != nil {
-		go finishSessionDestroy(destroy)
+	if result := finishSessionDestroy(destroy); result.HasTimedOut() {
+		if err := agent.MarkCleanupPending(abs, "delete"); err != nil {
+			go delayedSessionDelete(absDir, abs, destroy)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		go delayedSessionDelete(absDir, abs, destroy)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if err := removeSessionFiles(absDir, abs); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := agent.DeleteSubagentsByParent(dir, agent.BranchID(abs)); err != nil {
-		go finishSessionDestroy(destroy)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	go finishSessionDestroy(destroy)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func finishSessionDestroy(destroy control.SessionDestroyHandle) {
+func finishSessionDestroy(destroy control.SessionDestroyHandle) jobs.TeardownResult {
 	if destroy.Wait != nil {
-		destroy.Wait()
+		result := destroy.Wait()
+		if destroy.Finish != nil && !result.HasTimedOut() {
+			destroy.Finish()
+		}
+		return result
 	}
 	if destroy.Finish != nil {
 		destroy.Finish()
 	}
+	return jobs.TeardownResult{}
+}
+
+func delayedSessionDelete(absDir, abs string, destroy control.SessionDestroyHandle) {
+	if destroy.WaitAll != nil {
+		destroy.WaitAll()
+	}
+	if err := removeSessionFiles(absDir, abs); err != nil {
+		slog.Warn("serve: delayed session delete failed", "path", abs, "err", err)
+	}
+	if destroy.Finish != nil {
+		destroy.Finish()
+	}
+}
+
+func removeSessionFiles(absDir, abs string) error {
+	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := agent.DeleteSubagentsByParent(absDir, agent.BranchID(abs)); err != nil {
+		return err
+	}
+	if err := jobs.RemoveArtifacts(abs); err != nil {
+		return err
+	}
+	return agent.ClearCleanupPending(abs)
 }
 
 // sessionTitle returns a title for a session: the cached flash-generated title
