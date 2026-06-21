@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -344,7 +345,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				Name:              "codegraph",
 				StripRawPrefix:    "codegraph_",
 				Command:           bin,
-				Args:              []string{"serve", "--mcp"},
+				Args:              []string{"serve", "--mcp", "--no-watch"},
 				Dir:               root,
 				ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
 				// The daemon walks and indexes the whole tree; below-normal
@@ -365,6 +366,27 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 			bgSpecs = append(bgSpecs, spec)
 			bgNotice()
+			go func(bin, root string) {
+				syncOnce := func() {
+					cmd := exec.Command(bin, "sync", root)
+					cmd.Dir = root
+					if out, err := cmd.CombinedOutput(); err != nil {
+						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+							Text: "codegraph: sync failed: " + strings.TrimSpace(string(out))})
+					}
+				}
+				syncOnce()
+				ticker := time.NewTicker(60 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						syncOnce()
+					}
+				}
+			}(bin, root)
 		case cfg.Codegraph.AutoInstall:
 			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
 			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
@@ -844,7 +866,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					Name:              "codegraph",
 					StripRawPrefix:    "codegraph_",
 					Command:           bin,
-					Args:              []string{"serve", "--mcp"},
+					Args:              []string{"serve", "--mcp", "--no-watch"},
 					Dir:               root,
 					ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
 					LowPriority:       true,

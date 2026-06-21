@@ -4,7 +4,7 @@ GOEXE := $(shell go env GOEXE)
 
 # CodeGraph release pinned for the bundled MCP server / e2e test. Bump together
 # with any change to the integration in internal/codegraph.
-CODEGRAPH_VERSION := v0.9.7
+CODEGRAPH_VERSION := v1.0.1
 
 .PHONY: build vet fmt test hooks cross clean e2e-codegraph
 
