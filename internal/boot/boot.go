@@ -15,7 +15,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -434,11 +433,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			bgNotice()
 			go func(bin, root string) {
 				syncOnce := func() {
-					cmd := exec.Command(bin, "sync", root)
-					cmd.Dir = root
-					if out, err := cmd.CombinedOutput(); err != nil {
+					if out, err := codegraph.Sync(bin, root); err != nil {
 						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-							Text: "codegraph: sync failed: " + strings.TrimSpace(string(out))})
+							Text: "codegraph: sync failed: " + out})
 					}
 				}
 				syncOnce()

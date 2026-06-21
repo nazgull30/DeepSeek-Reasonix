@@ -155,6 +155,27 @@ func EnsureInit(ctx context.Context, bin, root string) error {
 	return nil
 }
 
+// Sync runs the codegraph sync command for root. It is a no-op when root is
+// unset or when the project has not been initialized (no .codegraph/ directory),
+// which prevents noisy "CodeGraph not initialized" errors when init was
+// interrupted or the project is fresh.
+func Sync(bin, root string) (string, error) {
+	if root == "" {
+		return "", nil
+	}
+	if !Initialized(root) {
+		return "", nil
+	}
+	cmd := exec.Command(bin, "sync", root)
+	cmd.Dir = root
+	proc.HideWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return strings.TrimSpace(string(out)), err
+	}
+	return "", nil
+}
+
 // Initialized reports whether root already has CodeGraph's project state. Boot
 // uses this to keep warm projects eager while moving first-time project setup to
 // background startup, avoiding a cold MCP handshake on the app's critical path.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -89,6 +90,136 @@ func TestEnsureInitPropagatesFailure(t *testing.T) {
 
 	if err := EnsureInit(context.Background(), bin, root); err == nil {
 		t.Fatal("EnsureInit should return the init failure")
+	}
+}
+
+func TestInitialized(t *testing.T) {
+	if Initialized("") {
+		t.Fatal("Initialized(\"\") should be false")
+	}
+	// Non-existent dir.
+	unknown := filepath.Join(t.TempDir(), "nope")
+	if Initialized(unknown) {
+		t.Fatal("Initialized(non-existent) should be false")
+	}
+	// .codegraph is a file, not a dir.
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".codegraph"), []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if Initialized(root) {
+		t.Fatal("Initialized(file) should be false")
+	}
+	// .codegraph is a directory.
+	root2 := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root2, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !Initialized(root2) {
+		t.Fatal("Initialized(existing dir) should be true")
+	}
+}
+
+func TestEnsureInitEmptyRoot(t *testing.T) {
+	// Root "" is a no-op even with a nil binary.
+	if err := EnsureInit(context.Background(), "/nonexistent/bin", ""); err != nil {
+		t.Fatalf("EnsureInit with empty root = %v, want nil", err)
+	}
+}
+
+func TestEnsureInitContextCancel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake launcher is a POSIX-sh script")
+	}
+	root := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	bin := filepath.Join(t.TempDir(), "slowcg")
+	writeExec(t, bin, "#!/bin/sh\nsleep 10\nmkdir -p .codegraph\n")
+
+	cancel() // cancel immediately
+	if err := EnsureInit(ctx, bin, root); err == nil {
+		t.Fatal("EnsureInit with cancelled context should fail")
+	}
+}
+
+func TestSyncEmptyRoot(t *testing.T) {
+	out, err := Sync("/nonexistent/bin", "")
+	if err != nil || out != "" {
+		t.Fatalf("Sync with empty root = %q, %v; want empty", out, err)
+	}
+}
+
+func TestSyncSkipsWhenNotInitialized(t *testing.T) {
+	root := t.TempDir()
+	// No .codegraph/ exists — Sync must be a no-op even if bin is bogus.
+	out, err := Sync("/nonexistent/bin", root)
+	if err != nil || out != "" {
+		t.Fatalf("Sync without init = %q, %v; want empty", out, err)
+	}
+}
+
+func TestSyncRunsWhenInitialized(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake launcher is a POSIX-sh script")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Fake sync that writes a sentinel.
+	bin := filepath.Join(t.TempDir(), "synccg")
+	writeExec(t, bin, "#!/bin/sh\necho synced > \"$2/.sync_ok\"\n")
+
+	out, err := Sync(bin, root)
+	if err != nil {
+		t.Fatalf("Sync = %v, out=%q", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sync_ok")); err != nil {
+		t.Fatal("Sync did not run: sentinel file missing")
+	}
+}
+
+func TestSyncPropagatesFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake launcher is a POSIX-sh script")
+	}
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "failcg")
+	writeExec(t, bin, "#!/bin/sh\necho \"some error\" 1>&2\nexit 1\n")
+
+	out, err := Sync(bin, root)
+	if err == nil {
+		t.Fatal("Sync should propagate command failure")
+	}
+	if !strings.Contains(out, "some error") {
+		t.Fatalf("Sync output = %q, want 'some error'", out)
+	}
+}
+
+func TestSyncInitializedRace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake launcher is a POSIX-sh script")
+	}
+	// Simulate the scenario: partial init created .codegraph/ but init did not
+	// complete. Sync should still be attempted (it is the codegraph binary's job
+	// to know what it needs), but a fake binary that checks and rejects a
+	// marker file confirms the guard in Sync itself does not over-skip.
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "partialcg")
+	writeExec(t, bin, "#!/bin/sh\nif [ ! -f \"$2/.codegraph/cg.db\" ]; then echo \"not fully initialized\" 1>&2; exit 1; fi\n")
+
+	out, err := Sync(bin, root)
+	if err == nil {
+		t.Fatal("Sync should fail because cg.db is missing from the partial .codegraph/")
+	}
+	if !strings.Contains(out, "not fully initialized") {
+		t.Fatalf("Sync output = %q, want 'not fully initialized'", out)
 	}
 }
 
