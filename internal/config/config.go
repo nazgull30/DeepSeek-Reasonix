@@ -405,6 +405,67 @@ type StatuslineConfig struct {
 	Command string `toml:"command"`
 }
 
+// CodegraphConfig enables the built-in codegraph MCP server. It is off by
+// default and requires the codegraph binary to be installed (either via
+// auto_install or the `reasonix codegraph install` command).
+type CodegraphConfig struct {
+	Enabled     bool   `toml:"enabled"`
+	AutoInstall bool   `toml:"auto_install"`
+	Path        string `toml:"path"`
+	Tier        string `toml:"tier"`
+}
+
+func (c CodegraphConfig) ShouldAutoStart() bool {
+	return c.Enabled
+}
+
+func (c CodegraphConfig) ResolvedTier() string {
+	return "background"
+}
+
+// BuiltInMCPConfig controls Reasonix-shipped MCP servers that require no user
+// server definition. They are off by default and become provider-visible only
+// after the user enables them.
+type BuiltInMCPConfig struct {
+	TimeEnabled     bool `toml:"time_enabled"`
+	Context7Enabled bool `toml:"context7_enabled"`
+}
+
+func (c BuiltInMCPConfig) Enabled(name string) bool {
+	switch name {
+	case "time":
+		return c.TimeEnabled
+	case "context7":
+		return c.Context7Enabled
+	default:
+		return false
+	}
+}
+
+func (c *BuiltInMCPConfig) SetEnabled(name string, enabled bool) bool {
+	switch name {
+	case "time":
+		c.TimeEnabled = enabled
+		return true
+	case "context7":
+		c.Context7Enabled = enabled
+		return true
+	default:
+		return false
+	}
+}
+
+func (c BuiltInMCPConfig) EnabledNames() []string {
+	var out []string
+	if c.TimeEnabled {
+		out = append(out, "time")
+	}
+	if c.Context7Enabled {
+		out = append(out, "context7")
+	}
+	return out
+}
+
 // BotConfig 控制多渠道 IM bot 消息网关。
 type BotConfig struct {
 	Enabled          bool                  `toml:"enabled"`
