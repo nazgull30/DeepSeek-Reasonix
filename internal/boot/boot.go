@@ -496,11 +496,16 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// add new ones directly to the host instead of creating a separate one.
 		if opts.SharedHost != nil {
 			for _, s := range eagerSpecs {
+				if !agentAllowedPlugins[s.Name] {
+					continue
+				}
 				if pluginHost.HasClient(s.Name) {
 					tools, err := pluginHost.ToolsFor(ctx, s.Name)
 					if err == nil {
 						for _, t := range tools {
-							reg.Add(t)
+							if pluginToolAllowed(t.Name(), agentAllowedPlugins) {
+								reg.Add(t)
+							}
 						}
 						continue
 					}
@@ -519,7 +524,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 						tools, err2 := pluginHost.ToolsFor(ctx, s.Name)
 						if err2 == nil {
 							for _, t := range tools {
-								reg.Add(t)
+								if pluginToolAllowed(t.Name(), agentAllowedPlugins) {
+									reg.Add(t)
+								}
 							}
 							continue
 						}
@@ -529,14 +536,18 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					continue
 				}
 				for _, t := range tools {
-					reg.Add(t)
+					if pluginToolAllowed(t.Name(), agentAllowedPlugins) {
+						reg.Add(t)
+					}
 				}
 			}
 		} else {
 			host, ptools := plugin.StartAvailable(ctx, eagerSpecs)
 			pluginHost = host
 			for _, t := range ptools {
-				reg.Add(t)
+				if pluginToolAllowed(t.Name(), agentAllowedPlugins) {
+					reg.Add(t)
+				}
 			}
 			// PhaseB (prompts + resources) runs on the boot ctx — which is the
 			// controller's session-scoped PluginCtx — so the auxiliary surfaces
@@ -554,6 +565,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// and Close see one cohesive set of servers regardless of tier.
 	registerDeferred := func(specs []plugin.Spec, kick bool) {
 		for _, s := range specs {
+			if !agentAllowedPlugins[s.Name] {
+				// Not visible to this agent. Still kick if the spec asked
+				// for background spawning (e.g. CodeGraph) so indexing
+				// makes progress even when the current agent doesn't use
+				// the plugin's tools.
+				if kick {
+					go func(spec plugin.Spec) {
+						if _, err := pluginHost.Add(context.WithoutCancel(ctx), spec); err != nil {
+							pluginHost.RecordFailure(spec, err)
+						}
+					}(s)
+				}
+				continue
+			}
 			// Already running on the shared host? Register tools directly.
 			if pluginHost.HasClient(s.Name) {
 				tools, err := pluginHost.ToolsFor(ctx, s.Name)
