@@ -20,7 +20,7 @@ import (
 const (
 	// Version is the pinned CodeGraph release fetched on first use. Keep in sync
 	// with CODEGRAPH_VERSION in the Makefile and .github/workflows.
-	Version = "v0.9.7"
+	Version = "v1.0.1"
 	cgRepo  = "colbymchenry/codegraph"
 
 	officialMirrorBase         = "https://dl.reasonix.io/codegraph"
