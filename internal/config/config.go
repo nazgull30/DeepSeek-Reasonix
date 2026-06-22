@@ -1296,10 +1296,18 @@ func Default() *Config {
 }
 
 func deepSeekV4FlashPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}
+	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
 }
 
 func deepSeekV4ProPrice() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"}
+}
+
+func deepSeekV4FlashPriceCNY() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}
+}
+
+func deepSeekV4ProPriceCNY() *provider.Pricing {
 	return &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}
 }
 
@@ -1310,45 +1318,54 @@ func deepSeekV4Prices() map[string]*provider.Pricing {
 	}
 }
 
-func deepSeekV4FlashPriceUSD() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
-}
-
-func deepSeekV4ProPriceUSD() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"}
-}
-
-func deepSeekV4PricesUSD() map[string]*provider.Pricing {
+func deepSeekV4PricesCNY() map[string]*provider.Pricing {
 	return map[string]*provider.Pricing{
-		"deepseek-v4-flash": deepSeekV4FlashPriceUSD(),
-		"deepseek-v4-pro":   deepSeekV4ProPriceUSD(),
+		"deepseek-v4-flash": deepSeekV4FlashPriceCNY(),
+		"deepseek-v4-pro":   deepSeekV4ProPriceCNY(),
 	}
 }
 
-// DeepSeekV4PricesForLanguage keeps the settings/template call site stable while
-// official DeepSeek defaults move to RMB. Persisted prices still win; this is
-// only used for templates and missing-default backfills.
+// DeepSeekV4PricesForLanguage returns default pricing for a given locale.
+// "zh" / "cny" / "rmb" / "yuan" return ¥ (RMB); anything else returns $ (USD).
 func DeepSeekV4PricesForLanguage(lang string) map[string]*provider.Pricing {
-	_ = lang
-	return deepSeekV4Prices()
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh", "cny", "rmb", "yuan":
+		return deepSeekV4PricesCNY()
+	default:
+		return deepSeekV4Prices()
+	}
 }
 
 func deepSeekV4PricesForConfig(c *Config) map[string]*provider.Pricing {
-	_ = c
+	if c != nil && c.DeepSeekOfficialPricingLanguage() != "" {
+		return DeepSeekV4PricesForLanguage(c.DeepSeekOfficialPricingLanguage())
+	}
 	return deepSeekV4Prices()
 }
 
 func deepSeekV4PriceForModel(lang, model string) *provider.Pricing {
-	_ = lang
-	return clonePricing(deepSeekV4Prices()[strings.TrimSpace(model)])
+	model = strings.TrimSpace(model)
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh", "cny", "rmb", "yuan":
+		return clonePricing(deepSeekV4PricesCNY()[model])
+	default:
+		return clonePricing(deepSeekV4Prices()[model])
+	}
 }
 
-// DeepSeekOfficialPricingLanguage is retained for settings/template compatibility.
-// Official DeepSeek providers now seed RMB prices by default; explicit user
-// prices in config still override these defaults.
+// DeepSeekOfficialPricingLanguage returns the locale hint used to pick
+// default DeepSeek pricing (USD vs RMB). Returns the configured language
+// or empty string (which maps to USD). Set to "zh" in config to see ¥
+// prices in /stats and the TUI without manually overriding prices.
 func (c *Config) DeepSeekOfficialPricingLanguage() string {
-	_ = c
-	return "zh"
+	if c == nil || c.Language == "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Language)) {
+	case "zh", "cny", "rmb", "yuan":
+		return "zh"
+	}
+	return ""
 }
 
 // ApplyDeepSeekOfficialDefaultPricing refreshes built-in/official DeepSeek
@@ -1520,7 +1537,7 @@ func isKnownDeepSeekOfficialPricing(model string, price *provider.Pricing) bool 
 	if model == "" || price == nil {
 		return false
 	}
-	for _, prices := range []map[string]*provider.Pricing{deepSeekV4Prices(), deepSeekV4PricesUSD()} {
+	for _, prices := range []map[string]*provider.Pricing{deepSeekV4Prices(), deepSeekV4PricesCNY()} {
 		if samePricing(price, prices[model]) {
 			return true
 		}
