@@ -1311,6 +1311,65 @@ model = "x"
 	}
 }
 
+func TestBuildTokenEconomyCodegraphConnectorReturnsDisabledWhenConfigOff(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "cg-1", Name: "connect_tool_source", Arguments: `{"source":"codegraph"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[codegraph]
+enabled = false
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(context.Background(), "use codegraph"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.Requests()
+	// Should have 2 requests (before and after connect_tool_source)
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	// Verify codegraph tools were NOT added (connect failed because disabled)
+	for _, name := range []string{"codegraph_context", "codegraph_search"} {
+		if requestHasTool(reqs[0], name) || requestHasTool(reqs[1], name) {
+			t.Fatalf("codegraph tools should not appear when codegraph disabled; %q found in tools=%v", name, toolSchemaNames(reqs[0].Tools))
+		}
+	}
+	// Verify error was returned to model
+	var toolErr string
+	for _, msg := range ctrl.History() {
+		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
+			toolErr = msg.Content
+		}
+	}
+	if !strings.Contains(toolErr, "disabled") {
+		t.Fatalf("codegraph source result should mention disabled, got:\n%s", toolErr)
+	}
+}
+
 func TestAddBuiltinsWithWorkspaceRootKeepsSessionTools(t *testing.T) {
 	reg := tool.NewRegistry()
 	var stderr bytes.Buffer

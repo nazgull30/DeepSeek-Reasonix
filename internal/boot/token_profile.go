@@ -132,6 +132,8 @@ func (t *toolSourceConnector) Execute(ctx context.Context, args json.RawMessage)
 		return runSourceInstaller(ctx, "web_fetch", t.webFetch)
 	case "lsp":
 		return runSourceInstaller(ctx, "lsp", t.lsp)
+	case "codegraph":
+		return runSourceInstaller(ctx, "codegraph", t.codegraph)
 	case "mcp":
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
@@ -165,6 +167,8 @@ func normalizeToolSource(source string) string {
 		return "install_source"
 	case "task", "subagent", "subagents":
 		return "task"
+	case "codegraph", "cg":
+		return "codegraph"
 	default:
 		return ""
 	}
@@ -189,6 +193,9 @@ func (t *toolSourceConnector) availableSources() []string {
 	}
 	if t.task != nil {
 		out = append(out, "task")
+	}
+	if t.codegraph != nil {
+		out = append(out, "codegraph")
 	}
 	sort.Strings(out)
 	return out

@@ -166,9 +166,9 @@ func TestSyncRunsWhenInitialized(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, ".codegraph"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Fake sync that writes a sentinel.
+	// Fake sync that writes a sentinel and outputs a report.
 	bin := filepath.Join(t.TempDir(), "synccg")
-	writeExec(t, bin, "#!/bin/sh\necho synced > \"$2/.sync_ok\"\n")
+	writeExec(t, bin, "#!/bin/sh\necho synced > \"$2/.sync_ok\"\necho \"filesAdded: 3, filesModified: 1\"\n")
 
 	out, err := Sync(bin, root)
 	if err != nil {
@@ -176,6 +176,9 @@ func TestSyncRunsWhenInitialized(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".sync_ok")); err != nil {
 		t.Fatal("Sync did not run: sentinel file missing")
+	}
+	if !strings.Contains(out, "filesAdded: 3") {
+		t.Fatalf("Sync output = %q, want sync report", out)
 	}
 }
 

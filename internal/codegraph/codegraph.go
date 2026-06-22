@@ -170,10 +170,11 @@ func Sync(bin, root string) (string, error) {
 	cmd.Dir = root
 	proc.HideWindow(cmd)
 	out, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
 	if err != nil {
-		return strings.TrimSpace(string(out)), err
+		return result, err
 	}
-	return "", nil
+	return result, nil
 }
 
 // Initialized reports whether root already has CodeGraph's project state. Boot
