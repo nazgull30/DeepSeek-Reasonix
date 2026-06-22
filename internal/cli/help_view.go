@@ -80,6 +80,7 @@ func builtinHelpItems() []compItem {
 		{label: "/reasoning-language", hint: i18n.M.CmdReasonLang},
 		{label: "/context", hint: i18n.M.CmdContext},
 		{label: "/stats", hint: i18n.M.CmdStats},
+		{label: "/reload-cmd", hint: i18n.M.CmdReloadCmd},
 		{label: "/agent_spawn", hint: "run a task on a managed agent"},
 		{label: "/agent_send", hint: "send a message to a managed agent"},
 		{label: "/agent_status", hint: "show agent statuses"},
