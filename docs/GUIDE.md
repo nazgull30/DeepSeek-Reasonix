@@ -168,7 +168,7 @@ Mode and display shortcuts:
 | `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. Terminals that forward Command/Super may also send `Cmd+Y`, but `Ctrl+Y` is the reliable terminal shortcut. |
 | `--yolo`, `--dangerously-skip-permissions` | Starts chat in YOLO | Same runtime mode as `Ctrl+Y`. |
 | `Ctrl+O` | Toggles verbose reasoning display | Also available through `/verbose`. |
-| `Ctrl+B` | Expands or collapses long shell output | Same action as clicking the collapsed shell-output hint. |
+| `Ctrl+B` | Expands or collapses long shell output | Works with terminal-native text selection because the TUI does not enable mouse reporting by default. |
 | Ask / Auto | No keyboard cycle | Ask is the default interactive base. Auto is not entered through `Shift+Tab`; use clients or APIs that expose the tool approval posture directly. |
 | `/goal <objective>`, `/goal --research <objective>`, `/goal --simple <objective>`, `/goal status`, `/goal clear` | Starts, checks, or clears Goal | Goal is not in any keyboard cycle; clearly long-horizon goals automatically enable AutoResearch. Ordinary prompts with strong AutoResearch signals are also upgraded into Goal. |
 

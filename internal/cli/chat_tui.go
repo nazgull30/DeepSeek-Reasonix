@@ -1918,7 +1918,7 @@ func (m *chatTUI) collapseShellSlot(id string, idx int, resultOutput string) {
 			for i := 0; i < shellPreviewLines; i++ {
 				preview[i] = dim(clampPlain(lines[i], m.width-len([]rune(connector))))
 			}
-			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (click/Ctrl+B)", total-shellPreviewLines))
+			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (Ctrl+B)", total-shellPreviewLines))
 			m.transcript[idx] = connectorBlock(preview)
 		} else {
 			rendered := make([]string, total)
@@ -1968,7 +1968,7 @@ func (m *chatTUI) toggleShellOutput() {
 			for i := 0; i < shellPreviewLines; i++ {
 				preview[i] = dim(clampPlain(lines[i], innerW))
 			}
-			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (click/Ctrl+B)", total-shellPreviewLines))
+			preview[shellPreviewLines] = dim(fmt.Sprintf("… %d more lines (Ctrl+B)", total-shellPreviewLines))
 			m.transcript[lastIdx] = connectorBlock(preview)
 		}
 	} else {
