@@ -422,6 +422,10 @@ func (a *Agent) SetAsker(as Asker) { a.asker = as }
 // memory change in the current session. The controller wires itself in.
 func (a *Agent) SetMemoryQueue(q memory.Queue) { a.memQueue = q }
 
+// SetExecutorHandoffGuard enables or disables the executor handoff guard.
+// The Coordinator calls this instead of writing the private field directly.
+func (a *Agent) SetExecutorHandoffGuard(v bool) { a.executorHandoffGuard = v }
+
 // SetPreEditHook installs the pre-edit snapshot hook (see onPreEdit). The
 // controller wires it to its per-session checkpoint store; nil disables capture.
 func (a *Agent) SetPreEditHook(fn func(diff.Change)) { a.onPreEdit = fn }
@@ -598,6 +602,10 @@ type Options struct {
 	// returns false. Use sparingly; the caller is responsible for ensuring the
 	// tool invocation is safe in a read-only context (e.g. bash for git status).
 	PlanModeAllowedTools []string
+
+	// MemoryQueue is the controller's memory-apply sink, carried by remember/forget
+	// tools. When set on a sub-agent, memory writes flow to the parent's controller.
+	MemoryQueue memory.Queue
 }
 
 func stringSet(ss []string) map[string]bool {
@@ -666,6 +674,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		archiveDir:           opts.ArchiveDir,
 		keepPolicy:           opts.KeepPolicy,
 		planModeAllowedTools: stringSet(opts.PlanModeAllowedTools),
+		memQueue:             opts.MemoryQueue,
 	}
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
