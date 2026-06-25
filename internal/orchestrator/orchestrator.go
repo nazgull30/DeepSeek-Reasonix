@@ -83,6 +83,13 @@ func (o *Orchestrator) AgentNames() []string {
 	return out
 }
 
+func (o *Orchestrator) HasAgent(name string) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	_, ok := o.agents[name]
+	return ok
+}
+
 func (o *Orchestrator) Close() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
