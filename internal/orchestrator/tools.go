@@ -200,4 +200,59 @@ func OrchestratorToolNames() []string {
 	}
 }
 
+// NoGitBash wraps the bash tool to intercept git commands when a dedicated git
+// child agent exists. The main agent must use agent_spawn to delegate git
+// operations instead of running them directly via bash.
+type NoGitBash struct {
+	Inner   tool.Tool
+	Orc     *Orchestrator
+	GitName string
+}
+
+func (b *NoGitBash) Name() string { return "bash" }
+
+func (b *NoGitBash) Description() string {
+	desc := strings.TrimSpace(b.Inner.Description())
+	if desc == "" {
+		desc = "Execute a command in the shell and return combined stdout/stderr."
+	}
+	return desc + " Git operations must use agent_spawn to the git agent."
+}
+
+func (b *NoGitBash) Schema() json.RawMessage { return b.Inner.Schema() }
+
+func (b *NoGitBash) Execute(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return b.Inner.Execute(ctx, args)
+	}
+	cmd := strings.TrimSpace(p.Command)
+	if isGitCommand(cmd) {
+		return "", fmt.Errorf("git operations must be delegated to the %q agent via agent_spawn, not run directly through bash", b.GitName)
+	}
+	return b.Inner.Execute(ctx, args)
+}
+
+func (b *NoGitBash) ReadOnly() bool { return b.Inner.ReadOnly() }
+
+func isGitCommand(cmd string) bool {
+	cmd = strings.TrimSpace(cmd)
+	if !strings.HasPrefix(cmd, "git ") {
+		return false
+	}
+	// Allow safe read-only git commands that don't modify the repo
+	gitParts := strings.Fields(cmd)
+	if len(gitParts) < 2 {
+		return false
+	}
+	subcmd := gitParts[1]
+	switch subcmd {
+	case "status", "log", "diff", "show", "branch", "describe", "rev-parse", "rev-list", "ls-files", "ls-tree", "cat-file", "config":
+		return false
+	}
+	return true
+}
+
 

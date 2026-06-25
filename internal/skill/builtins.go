@@ -176,12 +176,15 @@ How to operate:
    - Build / test / run commands: derive them from the manifest + scripts and verify the exact names — don't guess.
    - Architecture: the main packages/modules and how they fit; the entry point(s).
    - Conventions: formatting, naming, error handling, testing patterns — infer from real code (read a few representative files), not assumptions.
+   - Orchestrator setup: read reasonix.toml from the project root. If it has an [orchestrator] section with child agents, learn their names and roles so you can generate delegation rules and the structured host checks section.
 3. Write AGENTS.md with write_file (default filename AGENTS.md, unless an existing doc uses another name), each section terse:
    - Title + one-line description of the project.
    - ## Project — what it is, the stack, where the entry point lives.
    - ## Commands — the exact build / test / run / lint commands.
    - ## Architecture — the 3-7 load-bearing modules and their roles.
    - ## Conventions — only rules an agent must follow (style, patterns, do/don't).
+   - ## Child Agents — if reasonix.toml defines orchestrator agents, list each one with its name, purpose, and when to delegate to it. Include an absolute rule that Reasonix MUST delegate all code changes to the designated coder agent and all git operations to the designated git agent.
+   - ## Reasonix host checks — a section with verify: directives that the host enforces programmatically on every complete_step and final answer. Common checks: build (dotnet build, go build, npm run build), test (dotnet test, go test, npm test), lint, formatting (gofmt -d ., dotnet format --verify-no-changes). Derive the exact commands from the manifest. Never fabricate checks that don't apply.
    - ## Notes — leave an empty stub for later quick-adds.
 4. Keep it tight — it loads into every session's prompt, so every line costs context. Prefer specifics (file paths, command names) over prose. Never include secrets.
 
