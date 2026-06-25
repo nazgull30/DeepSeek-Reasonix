@@ -319,8 +319,8 @@ func TestIncompleteGoalTodos(t *testing.T) {
 
 // TestGoalInterceptsCompleteWithIncompleteTodos verifies that when the
 // agent claims [goal:complete] but has unfinished canonical todos, the
-// goal loop intercepts the first claim, then lets a second consecutive
-// claim through as an override.
+// goal loop intercepts every claim — even consecutive ones — preventing
+// bypass on a second try in non-strict mode.
 func TestGoalInterceptsCompleteWithIncompleteTodos(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{
 		textTurn("All done.\n\n[goal:complete]"),
@@ -357,8 +357,8 @@ func TestGoalInterceptsCompleteWithIncompleteTodos(t *testing.T) {
 		allNotices = append(allNotices, n)
 	}
 
-	// Should see an intercept notice and the goal should complete
-	// (second [goal:complete] overrides the intercept).
+	// Should see an intercept notice and the goal should be blocked
+	// (every [goal:complete] with incomplete todos is intercepted).
 	found := false
 	for _, n := range allNotices {
 		if strings.Contains(n, "goal intercept") {
@@ -369,8 +369,8 @@ func TestGoalInterceptsCompleteWithIncompleteTodos(t *testing.T) {
 	if !found {
 		t.Fatalf("expected a 'goal intercept' notice, got %v", allNotices)
 	}
-	if c.GoalStatus() != GoalStatusComplete {
-		t.Fatalf("GoalStatus() = %q, want complete (second [goal:complete] should override)", c.GoalStatus())
+	if c.GoalStatus() != GoalStatusBlocked {
+		t.Fatalf("GoalStatus() = %q, want blocked (every [goal:complete] with incomplete todos is intercepted)", c.GoalStatus())
 	}
 }
 

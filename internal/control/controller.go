@@ -738,9 +738,9 @@ func (c *Controller) advanceGoalAfterTurn() bool {
 	c.goalTurns++
 	switch status {
 	case GoalStatusComplete:
-		if incomplete := c.incompleteGoalTodos(); len(incomplete) > 0 && (c.goalStrict || c.goalIntercepts == 0) {
-			// In strict mode every claim is blocked until todos are done;
-			// otherwise only the first consecutive claim is intercepted.
+		if incomplete := c.incompleteGoalTodos(); len(incomplete) > 0 {
+			// Goal is not actually complete — intercept regardless of strict
+			// mode to prevent accidental or repeated bypass attempts.
 			c.goalIntercepts++
 			c.goalInterceptMsg = incomplete
 			break

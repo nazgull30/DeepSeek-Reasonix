@@ -885,12 +885,16 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 	hasProjectChecks := len(a.projectChecks) > 0
 	if hasProjectChecks {
 		out.applies = true
+		var sessionMsgs []provider.Message
+		if a.session != nil {
+			sessionMsgs = a.session.Snapshot()
+		}
 		for _, check := range a.projectChecks {
 			command := strings.TrimSpace(check.Command)
 			if command == "" {
 				continue
 			}
-			if !a.evidence.HasSuccessfulCommand(command) {
+			if !a.evidence.HasSuccessfulCommand(command) && !evidence.CommandProvenInSession(sessionMsgs, command) {
 				out.missingProjectChecks++
 				missing = append(missing, fmt.Sprintf("run %q from %s", command, finalReadinessCheckSource(check)))
 			}
