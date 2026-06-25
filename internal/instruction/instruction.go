@@ -43,7 +43,10 @@ func ExtractHostChecks(docs []memory.Source) []VerifyCheck {
 		for i, raw := range strings.Split(doc.Body, "\n") {
 			line := strings.TrimRight(raw, "\r")
 			if heading, ok := markdownHeading(line); ok {
-				inSection = strings.EqualFold(heading, "Reasonix host checks")
+				level := headingLevel(line)
+				if !inSection || level <= 2 {
+					inSection = strings.EqualFold(heading, "Reasonix host checks")
+				}
 				continue
 			}
 			if !inSection {
@@ -79,6 +82,15 @@ func markdownHeading(line string) (string, bool) {
 	heading := strings.TrimSpace(line[i+1:])
 	heading = strings.TrimSpace(strings.TrimRight(heading, "#"))
 	return heading, heading != ""
+}
+
+func headingLevel(line string) int {
+	trimmed := strings.TrimSpace(line)
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	return level
 }
 
 func verifyBullet(line string) (string, bool) {

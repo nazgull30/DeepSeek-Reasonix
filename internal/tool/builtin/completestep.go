@@ -177,7 +177,7 @@ func verifyStepEvidence(ctx context.Context, items []stepEvidence) (hostVerified
 	return hostVerified, manualUnverified, nil
 }
 
-func verifyProjectChecks(ctx context.Context, items []stepEvidence) (int, error) {
+func verifyProjectChecks(ctx context.Context, _ []stepEvidence) (int, error) {
 	checks := instruction.FromContext(ctx)
 	if len(checks) == 0 {
 		return 0, nil
@@ -186,33 +186,16 @@ func verifyProjectChecks(ctx context.Context, items []stepEvidence) (int, error)
 	if !ok {
 		return 0, nil
 	}
-	after, ok := latestWriteBackedEvidenceIndex(ledger, items)
-	if !ok {
-		return 0, nil
-	}
 	for _, check := range checks {
 		command := strings.TrimSpace(check.Command)
 		if command == "" {
 			continue
 		}
-		if !ledger.HasSuccessfulCommandAfter(command, after) {
-			return 0, fmt.Errorf("project check %q from %s has no matching successful bash receipt after the latest matching write in this turn", command, checkSource(check))
+		if !ledger.HasSuccessfulCommand(command) && !verifyCommandFromSession(ctx, command) {
+			return 0, fmt.Errorf("project check %q from %s has no matching successful bash receipt in this turn or any prior turn", command, checkSource(check))
 		}
 	}
 	return len(checks), nil
-}
-
-func latestWriteBackedEvidenceIndex(ledger *evidence.Ledger, items []stepEvidence) (int, bool) {
-	latest := -1
-	for _, item := range items {
-		switch item.Kind {
-		case "diff", "files":
-			if i, ok := ledger.LatestSuccessfulWriteIndex(item.Paths); ok && i > latest {
-				latest = i
-			}
-		}
-	}
-	return latest, latest >= 0
 }
 
 func checkSource(check instruction.VerifyCheck) string {

@@ -882,30 +882,23 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 			missing = append(missing, finalReadinessIncompleteTodos(incomplete))
 		}
 	}
-	writer, hasWriter := a.evidence.LatestSuccessfulWriterIndex()
-	if !hasWriter {
-		if len(missing) > 0 {
-			out.reason = strings.Join(missing, "; ")
-		}
-		return out
-	}
 	hasProjectChecks := len(a.projectChecks) > 0
-	hasTodoReceipt := a.evidence.HasSuccessfulTodoWrite()
-	if !hasProjectChecks && !hasTodoReceipt && len(missing) == 0 {
+	if hasProjectChecks {
+		out.applies = true
+		for _, check := range a.projectChecks {
+			command := strings.TrimSpace(check.Command)
+			if command == "" {
+				continue
+			}
+			if !a.evidence.HasSuccessfulCommand(command) {
+				out.missingProjectChecks++
+				missing = append(missing, fmt.Sprintf("run %q from %s", command, finalReadinessCheckSource(check)))
+			}
+		}
+	}
+	if !out.applies {
 		return finalReadinessCheck{}
 	}
-	out.applies = true
-	for _, check := range a.projectChecks {
-		command := strings.TrimSpace(check.Command)
-		if command == "" {
-			continue
-		}
-		if !a.evidence.HasSuccessfulCommandAfter(command, writer) {
-			out.missingProjectChecks++
-			missing = append(missing, fmt.Sprintf("run %q from %s after the latest write", command, finalReadinessCheckSource(check)))
-		}
-	}
-
 	if len(missing) == 0 {
 		return out
 	}

@@ -724,7 +724,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			entry.ContextWindow, cfg.Agent.RecentKeep, cfg.Agent.SoftCompactRatio, cfg.Agent.CompactRatio, cfg.Agent.CompactForceRatio,
 			cfg.Agent.Temperature, config.ArchiveDir(), "", headlessGate,
 			keepPolicy,
-			taskModel, taskEffort, resolveSubagentProvider).
+			taskModel, taskEffort, resolveSubagentProvider, projectChecks).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity)
 		reg.Add(tt)
@@ -831,6 +831,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			UsageSource:       event.UsageSourceSubagent,
 			Gate:              headlessGate,
 			ContextWindow:     ctxWin,
+			ProjectChecks:     projectChecks,
 			RecentKeep:        cfg.Agent.RecentKeep,
 			ArchiveDir:        config.ArchiveDir(),
 			KeepPolicy:        keepPolicy,

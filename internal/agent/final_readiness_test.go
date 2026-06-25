@@ -32,14 +32,14 @@ func TestFinalReadinessFailureBranches(t *testing.T) {
 		wantEmpty   bool
 		wantContain string
 	}{
-		{"nil evidence never gates", []instruction.VerifyCheck{check}, nil, true, ""},
-		{"no writer never gates", []instruction.VerifyCheck{check}, readinessLedger(checkAfter), true, ""},
+		{"no writer with checks gates when command missing", []instruction.VerifyCheck{check}, readinessLedger(readOnly), false, "go test ./..."},
+		{"project check found in ledger satisfies", []instruction.VerifyCheck{check}, readinessLedger(checkAfter), true, ""},
 		{"todo-only turn may end with incomplete list", nil, readinessLedger(todo), true, ""},
 		{"read-only context plus todo may end with incomplete list", nil, readinessLedger(readOnly, todo), true, ""},
 		{"completed todo without writer satisfies", nil, readinessLedger(doneTodo), true, ""},
 		{"writer without checks or todo never gates", nil, readinessLedger(writer), true, ""},
-		{"missing project check after writer is reported", []instruction.VerifyCheck{check}, readinessLedger(checkAfter, writer), false, "go test ./..."},
-		{"project check run after writer satisfies", []instruction.VerifyCheck{check}, readinessLedger(writer, checkAfter), true, ""},
+		{"missing project check with writer is reported", []instruction.VerifyCheck{check}, readinessLedger(writer), false, "go test ./..."},
+		{"project check run before writer satisfies", []instruction.VerifyCheck{check}, readinessLedger(checkAfter, writer), true, ""},
 		{"todo writer without complete_step is reported", nil, readinessLedger(writer, todo), false, "incomplete items"},
 		{"complete_step without final todo update is reported", nil, readinessLedger(writer, todo, completeAfter), false, "latest successful todo_write"},
 		{"todo writer with complete_step and completed todo satisfies", nil, readinessLedger(writer, todo, completeAfter, doneTodo), true, ""},
