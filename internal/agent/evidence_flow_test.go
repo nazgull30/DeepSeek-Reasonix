@@ -160,7 +160,7 @@ func TestEvidenceFlowEnforcesProjectChecksAfterWrite(t *testing.T) {
 	}
 }
 
-func TestFinalReadinessAllowsFinalAnswerWithoutWriter(t *testing.T) {
+func TestFinalReadinessBlocksFinalAnswerWithoutCommand(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
@@ -168,11 +168,12 @@ func TestFinalReadinessAllowsFinalAnswerWithoutWriter(t *testing.T) {
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
 	}, event.Discard)
 
-	if err := a.Run(context.Background(), "inspect only"); err != nil {
-		t.Fatalf("Run: %v", err)
+	err := a.Run(context.Background(), "inspect only")
+	if err == nil {
+		t.Fatal("Run should fail: project checks require commands, none were run")
 	}
-	if prov.call != 1 {
-		t.Fatalf("provider calls = %d, want 1", prov.call)
+	if !strings.Contains(err.Error(), "final-answer readiness failed") {
+		t.Fatalf("Run error = %q, want readiness failure", err)
 	}
 }
 
@@ -197,7 +198,7 @@ func TestFinalReadinessAllowsWriterWithoutChecksOrTodos(t *testing.T) {
 }
 
 func TestFinalReadinessAuditSkipsWhenGateDoesNotApply(t *testing.T) {
-	t.Run("no writer", func(t *testing.T) {
+	t.Run("no writer but checks gate", func(t *testing.T) {
 		prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 			{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 		}}
@@ -206,11 +207,11 @@ func TestFinalReadinessAuditSkipsWhenGateDoesNotApply(t *testing.T) {
 			ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
 		}, sink)
 
-		if err := a.Run(context.Background(), "inspect only"); err != nil {
-			t.Fatalf("Run: %v", err)
+		if err := a.Run(context.Background(), "inspect only"); err == nil {
+			t.Fatal("Run should fail: project checks gate even without writer")
 		}
-		if len(sink.events) != 0 {
-			t.Fatalf("readiness audit events = %d, want 0: %+v", len(sink.events), sink.events)
+		if len(sink.events) == 0 {
+			t.Fatal("readiness audit events = 0, want blocked events")
 		}
 	})
 
@@ -307,7 +308,7 @@ func TestFinalReadinessAuditRecordsBlockAndRecovery(t *testing.T) {
 	}
 }
 
-func TestFinalReadinessRejectsProjectCheckBeforeWriter(t *testing.T) {
+func TestFinalReadinessAcceptsProjectCheckBeforeWriter(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "bash", readOnly: false})
 	reg.Add(fakeTool{name: "write_file", readOnly: false})
@@ -317,12 +318,7 @@ func TestFinalReadinessRejectsProjectCheckBeforeWriter(t *testing.T) {
 			toolCallChunk("c2", "write_file", `{"path":"changed.go","content":"package main"}`),
 			{Type: provider.ChunkDone},
 		},
-		{{Type: provider.ChunkText, Text: "premature"}, {Type: provider.ChunkDone}},
-		{
-			toolCallChunk("c3", "bash", `{"command":"go test ./..."}`),
-			{Type: provider.ChunkDone},
-		},
-		{{Type: provider.ChunkText, Text: "verified done"}, {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "done"}, {Type: provider.ChunkDone}},
 	}}
 	a := New(prov, reg, NewSession(""), Options{
 		ProjectChecks: []instruction.VerifyCheck{{Command: "go test ./...", SourcePath: "AGENTS.md", Line: 3}},
@@ -331,8 +327,8 @@ func TestFinalReadinessRejectsProjectCheckBeforeWriter(t *testing.T) {
 	if err := a.Run(context.Background(), "verify before edit, then finish"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if prov.call != 4 {
-		t.Fatalf("provider calls = %d, want pre-write check rejected and retried", prov.call)
+	if prov.call != 2 {
+		t.Fatalf("provider calls = %d, want check satisfied from full ledger", prov.call)
 	}
 }
 

@@ -203,7 +203,7 @@ func TestCompleteStepRejectsMissingProjectCheckAfterWrite(t *testing.T) {
 	}
 }
 
-func TestCompleteStepRejectsProjectCheckBeforeWrite(t *testing.T) {
+func TestCompleteStepAcceptsProjectCheckBeforeWrite(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{ToolName: "bash", Success: true, Command: "go test ./..."})
 	ledger.Record(evidence.Receipt{ToolName: "write_file", Success: true, Paths: []string{"changed.go"}, Write: true})
@@ -216,8 +216,8 @@ func TestCompleteStepRejectsProjectCheckBeforeWrite(t *testing.T) {
 		"result":"code changed",
 		"evidence":[{"kind":"diff","summary":"changed code","paths":["changed.go"]}]
 	}`))
-	if err == nil || !strings.Contains(err.Error(), "after the latest matching write") {
-		t.Fatalf("check before write should be rejected, got %v", err)
+	if err != nil {
+		t.Fatalf("check before write should be accepted with full-ledger matching: %v", err)
 	}
 }
 
@@ -244,7 +244,7 @@ func TestCompleteStepAcceptsProjectChecksAfterWrite(t *testing.T) {
 	}
 }
 
-func TestCompleteStepProjectChecksOnlyGateWriteBackedCompletions(t *testing.T) {
+func TestCompleteStepRejectsNonWriteBackedWithoutProjectChecks(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{ToolName: "read_file", Success: true, Paths: []string{"notes.md"}, Read: true})
 	ctx := instruction.WithChecks(evidence.WithLedger(context.Background(), ledger), []instruction.VerifyCheck{
@@ -256,8 +256,8 @@ func TestCompleteStepProjectChecksOnlyGateWriteBackedCompletions(t *testing.T) {
 		`{"step":"Inspect","result":"read file","evidence":[{"kind":"files","summary":"inspected file","paths":["notes.md"]}]}`,
 	}
 	for _, body := range cases {
-		if _, err := (completeStep{}).Execute(ctx, json.RawMessage(body)); err != nil {
-			t.Fatalf("non-write-backed completion should not require project checks: %v", err)
+		if _, err := (completeStep{}).Execute(ctx, json.RawMessage(body)); err == nil {
+			t.Fatalf("non-write-backed completion must still require project checks: %v", body)
 		}
 	}
 }

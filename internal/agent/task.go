@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"reasonix/internal/event"
+	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -132,6 +133,7 @@ type TaskTool struct {
 	baseModel         string
 	baseEffort        string
 	identityProfile   func(modelRef, effort string) (string, string)
+	projectChecks     []instruction.VerifyCheck
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -142,7 +144,7 @@ type TaskTool struct {
 // interactive prompt (there is no UI to answer one).
 func NewTaskTool(prov provider.Provider, pricing *provider.Pricing, parentReg *tool.Registry,
 	maxSteps, contextWindow, recentKeep int, softCompactRatio, compactRatio, compactForceRatio, temperature float64, archiveDir, sysPrompt string, gate Gate,
-	keepPolicy KeepPolicy, subagentModel, subagentEffort string, resolveProvider func(string, string) (provider.Provider, *provider.Pricing, int, error)) *TaskTool {
+	keepPolicy KeepPolicy, subagentModel, subagentEffort string, resolveProvider func(string, string) (provider.Provider, *provider.Pricing, int, error), projectChecks []instruction.VerifyCheck) *TaskTool {
 	if sysPrompt == "" {
 		sysPrompt = DefaultTaskSystemPrompt
 	}
@@ -164,6 +166,7 @@ func NewTaskTool(prov provider.Provider, pricing *provider.Pricing, parentReg *t
 		subagentModel:     subagentModel,
 		subagentEffort:    subagentEffort,
 		resolveProvider:   resolveProvider,
+		projectChecks:     append([]instruction.VerifyCheck(nil), projectChecks...),
 	}
 }
 
@@ -508,6 +511,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		UsageSource:       event.UsageSourceSubagent,
 		Gate:              t.gate,
 		ContextWindow:     ctxWin,
+		ProjectChecks:     t.projectChecks,
 		RecentKeep:        t.recentKeep,
 		SoftCompactRatio:  t.softCompactRatio,
 		CompactRatio:      t.compactRatio,
