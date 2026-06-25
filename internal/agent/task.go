@@ -12,6 +12,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
+	"reasonix/internal/memory"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -83,7 +84,29 @@ func (b foregroundOnlyBash) Description() string {
 	return desc + " Background execution is unavailable inside subagents."
 }
 
-func (foregroundOnlyBash) Schema() json.RawMessage {
+func (b foregroundOnlyBash) Schema() json.RawMessage {
+	// Derive from the inner bash schema so field descriptions stay in sync.
+	// Only the `command` property is exposed — background execution and other
+	// fields available in the parent bash are stripped for sub-agents.
+	var innerSchema struct {
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	innerJSON := b.inner.Schema()
+	if err := json.Unmarshal(innerJSON, &innerSchema); err == nil {
+		if cmdProp, ok := innerSchema.Properties["command"]; ok {
+			out, err := json.Marshal(map[string]interface{}{
+				"type": "object",
+				"properties": map[string]json.RawMessage{
+					"command": cmdProp,
+				},
+				"required": []string{"command"},
+			})
+			if err == nil {
+				return json.RawMessage(out)
+			}
+		}
+	}
+	// Fallback — should not be reached in practice.
 	return json.RawMessage(`{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute in the foreground"}},"required":["command"]}`)
 }
 
@@ -504,6 +527,7 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 }
 
 func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session) (string, error) {
+	mq, _ := memory.QueueFromContext(ctx)
 	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
 		MaxSteps:          maxSteps,
 		Temperature:       t.temperature,
@@ -519,6 +543,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		ArchiveDir:        t.archiveDir,
 		KeepPolicy:        t.keepPolicy,
 		ReasoningLanguage: ReasoningLanguageFromContext(ctx),
+		MemoryQueue:       mq,
 	}, sink)
 }
 

@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
 	"reasonix/internal/event"
 	"reasonix/internal/jobs"
+	"reasonix/internal/memory"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -131,21 +130,27 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 	allDone := make(chan struct{})
 
 	// Dispatcher goroutine: spawns tasks when their deps are satisfied,
-	// accumulating wisdom from completed tasks as files on disk.
+	// accumulating predecessor results for dependent tasks via a concurrent-safe map.
 	go func() {
 		spawned := 0
 		completed := 0
-		wisdomDir, _ := os.MkdirTemp("", "parallel-wisdom-*")
-		if wisdomDir != "" {
-			defer os.RemoveAll(wisdomDir)
-		}
+		var taskResults sync.Map // map[int]subResult — predecessor results
 
 		makePrompt := func(t parallelTaskItem) string {
 			var prefix strings.Builder
-			if len(t.DependsOn) > 0 && wisdomDir != "" {
-				entries, _ := os.ReadDir(wisdomDir)
-				if len(entries) > 0 {
-					fmt.Fprintf(&prefix, "Previous task results are available at %s. Read the relevant files with read_file before starting.\n\n", wisdomDir)
+			if len(t.DependsOn) > 0 {
+				for _, dep := range t.DependsOn {
+					if v, ok := taskResults.Load(dep); ok {
+						r := v.(subResult)
+						summary := strings.TrimSpace(r.output)
+						if summary == "" && r.err != nil {
+							summary = fmt.Sprintf("FAILED: %s", r.err)
+						}
+						if len(summary) > 2000 {
+							summary = summary[:2000] + "…"
+						}
+						fmt.Fprintf(&prefix, "=== Predecessor task-%d result ===\n%s\n\n", dep+1, summary)
+					}
 				}
 			}
 			prefix.WriteString(t.Prompt)
@@ -177,16 +182,8 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 			outputs[r.index] = r.output
 			errors[r.index] = r.err
 
-			// Write wisdom to file instead of inlining in prompt.
-			if wisdomDir != "" && r.output != "" {
-				fname := filepath.Join(wisdomDir, fmt.Sprintf("task-%d.md", r.index+1))
-				summary := fmt.Sprintf("# Task %d Result\n\n%s", r.index+1, strings.TrimSpace(r.output))
-				_ = os.WriteFile(fname, []byte(summary), 0o644)
-			} else if wisdomDir != "" && r.err != nil {
-				fname := filepath.Join(wisdomDir, fmt.Sprintf("task-%d.md", r.index+1))
-				summary := fmt.Sprintf("# Task %d Result\n\nFAILED: %s", r.index+1, r.err)
-				_ = os.WriteFile(fname, []byte(summary), 0o644)
-			}
+			// Store predecessor result for dependent tasks.
+			taskResults.Store(r.index, r)
 
 			// Check if any waiting tasks are now unblocked.
 			for i, t := range params.Tasks {
@@ -256,6 +253,7 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 				}
 
 				sess := NewSession("")
+				mq, _ := memory.QueueFromContext(ctx)
 				output, runErr := RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
 					MaxSteps:          max,
 					Temperature:       p.taskTool.temperature,
@@ -270,6 +268,7 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 					ArchiveDir:        p.taskTool.archiveDir,
 					KeepPolicy:        p.taskTool.keepPolicy,
 					ProjectChecks:     p.taskTool.projectChecks,
+					MemoryQueue:       mq,
 				}, nested)
 
 				if runErr != nil {
@@ -312,10 +311,6 @@ func (p *ParallelTasksTool) runAsBackgroundJobs(ctx context.Context, tasks []par
 		return "", fmt.Errorf("background jobs are not available in this context")
 	}
 	session := jobs.SessionFromContext(ctx)
-
-	if err := validateParallelTaskItems(tasks); err != nil {
-		return "", err
-	}
 
 	type jobRef struct {
 		id    string
