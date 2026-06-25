@@ -122,24 +122,25 @@ func verifyTodoCompletionTransitions(ctx context.Context, todos []todoItem) erro
 
 // completedWithoutBaseline compares current todos against a prior session
 // baseline when no turn baseline exists. Items already completed in the prior
-// turn are skipped; only newly completed items without a matching complete_step
-// receipt in the current turn ledger are reported.
+// turn are skipped (matched by content identity, not position); only newly
+// completed items without a matching complete_step receipt in the current turn
+// ledger are reported.
 func completedWithoutBaseline(current, prior []evidence.TodoItem, ledger *evidence.Ledger) []evidence.TodoStepMatch {
+	current = evidence.NormalizeTodos(current)
 	var missing []evidence.TodoStepMatch
 	for i, t := range current {
 		if t.Status != "completed" {
 			continue
 		}
-		index := i + 1
-		if index-1 < len(prior) && prior[index-1].Status == "completed" {
+		if evidence.WasCompletedInPrior(t, prior) {
 			continue
 		}
-		if ledger.HasCompleteStepForTodo(t.Content) {
+		if ledger.HasCompleteStepForTodoInList(t.Content, current) {
 			continue
 		}
 		missing = append(missing, evidence.TodoStepMatch{
 			Found:      true,
-			Index:      index,
+			Index:      i + 1,
 			Content:    t.Content,
 			Status:     "completed",
 			ActiveForm: t.ActiveForm,
