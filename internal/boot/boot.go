@@ -105,6 +105,11 @@ type Options struct {
 	// plugins, and skills are registered. Used to prevent managed agents from
 	// exposing orchestrator meta-tools or other unwanted capabilities.
 	ToolDenylist []string
+	// InheritProjectMemory controls whether project memory (REASONIX.md /
+	// AGENTS.md hierarchy) is composed into the system prompt. nil means inherit
+	// (default, backward compatible); false means skip. Only meaningful when
+	// AgentName is non-empty (orchestrator child agent).
+	InheritProjectMemory *bool
 	// AgentName identifies the controller being built. Empty means the main
 	// agent; non-empty means an orchestrator child agent. When set, plugins
 	// with a non-empty Agents list are loaded only if this name appears in it.
@@ -254,7 +259,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// controller's transient turn-injection and fold in on the next session.
 	mem := memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
-	sysPrompt = memory.Compose(sysPrompt, mem)
+	if opts.InheritProjectMemory == nil || *opts.InheritProjectMemory {
+		sysPrompt = memory.Compose(sysPrompt, mem)
+	}
 
 	// Skills: discover playbooks (built-in + project/custom/global) and fold their
 	// one-liner index into the same cache-stable prefix — names + descriptions

@@ -748,8 +748,9 @@ type OrchestratorAgentEntry struct {
 	SystemPromptFile string  `toml:"system_prompt_file"`
 	Persist         bool     `toml:"persist"`
 	Ephemeral       bool     `toml:"ephemeral"`
-	Verbose         bool     `toml:"verbose"`
-	Tools           []string `toml:"tools"`
+	Verbose               bool     `toml:"verbose"`
+	InheritProjectMemory  *bool    `toml:"inherit_project_memory"`
+	Tools                 []string `toml:"tools"`
 }
 
 // ResolveSystemPrompt returns the entry's system prompt, reading system_prompt_file if set.
