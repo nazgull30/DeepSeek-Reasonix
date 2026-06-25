@@ -93,12 +93,23 @@ func (todoWrite) Execute(ctx context.Context, args json.RawMessage) (string, err
 }
 
 func verifyTodoCompletionTransitions(ctx context.Context, todos []todoItem) error {
+	evidenceTodos := toEvidenceTodos(todos)
 	ledger, ok := evidence.FromContext(ctx)
 	if !ok {
 		return nil
 	}
-	missing, hasBaseline := ledger.UnverifiedCompletedTodos(toEvidenceTodos(todos))
-	if !hasBaseline || len(missing) == 0 {
+	missing, hasBaseline := ledger.UnverifiedCompletedTodos(evidenceTodos)
+	if !hasBaseline {
+		// No baseline todo_write in the current turn — fall back to scanning
+		// session messages for a prior turn's todo_write to prevent the model
+		// from marking everything completed on the first call of the turn.
+		if msgs, ok := evidence.SessionMessagesFromContext(ctx); ok {
+			if prior, ok := evidence.LastTodoWriteFromSession(msgs); ok {
+				missing = completedWithoutBaseline(evidenceTodos, prior, ledger)
+			}
+		}
+	}
+	if len(missing) == 0 {
 		return nil
 	}
 	const hint = "; sign each finished item off with complete_step first, then re-send this todo_write"
@@ -107,6 +118,34 @@ func verifyTodoCompletionTransitions(ctx context.Context, todos []todoItem) erro
 		return fmt.Errorf("todo %d %q is newly completed but has no matching successful complete_step receipt in this turn%s", m.Index, m.Content, hint)
 	}
 	return fmt.Errorf("%d todos are newly completed but have no matching successful complete_step receipts in this turn%s", len(missing), hint)
+}
+
+// completedWithoutBaseline compares current todos against a prior session
+// baseline when no turn baseline exists. Items already completed in the prior
+// turn are skipped; only newly completed items without a matching complete_step
+// receipt in the current turn ledger are reported.
+func completedWithoutBaseline(current, prior []evidence.TodoItem, ledger *evidence.Ledger) []evidence.TodoStepMatch {
+	var missing []evidence.TodoStepMatch
+	for i, t := range current {
+		if t.Status != "completed" {
+			continue
+		}
+		index := i + 1
+		if index-1 < len(prior) && prior[index-1].Status == "completed" {
+			continue
+		}
+		if ledger.HasCompleteStepForTodo(t.Content) {
+			continue
+		}
+		missing = append(missing, evidence.TodoStepMatch{
+			Found:      true,
+			Index:      index,
+			Content:    t.Content,
+			Status:     "completed",
+			ActiveForm: t.ActiveForm,
+		})
+	}
+	return missing
 }
 
 func toEvidenceTodos(todos []todoItem) []evidence.TodoItem {

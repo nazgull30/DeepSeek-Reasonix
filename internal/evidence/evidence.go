@@ -695,6 +695,31 @@ func previousTodoCompleted(index int, current TodoItem, previous []TodoItem) boo
 	return false
 }
 
+// HasCompleteStepForTodo reports whether the ledger contains a successful
+// complete_step receipt matching the given todo content.
+func (l *Ledger) HasCompleteStepForTodo(content string) bool {
+	if l == nil {
+		return false
+	}
+	l.mu.Lock()
+	receipts := append([]Receipt(nil), l.receipts...)
+	l.mu.Unlock()
+	for _, r := range receipts {
+		if !r.Success || r.ToolName != "complete_step" || strings.TrimSpace(r.Step) == "" {
+			continue
+		}
+		if sameStepText(r.Step, content) {
+			return true
+		}
+		if r.TodoStep != nil && r.TodoStep.Found {
+			if sameStepText(r.TodoStep.Content, content) || sameStepText(r.TodoStep.ActiveForm, content) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func sameTodoIdentity(a, b TodoItem) bool {
 	return sameStepText(a.Content, b.Content) || sameStepText(a.ActiveForm, b.ActiveForm)
 }
@@ -842,6 +867,93 @@ func normalizePaths(paths []string) []string {
 		}
 	}
 	return out
+}
+
+// CommandProvenInSession scans session messages for a successful tool call
+// matching the given command. Unlike HasSuccessfulCommand (which only checks
+// the current turn's ledger), this function checks all messages in the session.
+func CommandProvenInSession(msgs []provider.Message, command string) bool {
+	lookup := strings.TrimSpace(command)
+	lookup = strings.ReplaceAll(lookup, "…", "...")
+	if lookup == "" {
+		return false
+	}
+	toolName := firstWordSession(lookup)
+	failed := failedSessionCallIDs(msgs)
+
+	for _, msg := range msgs {
+		for _, tc := range msg.ToolCalls {
+			if failed[tc.ID] {
+				continue
+			}
+			cmd := extractCommandFromCall(tc.Name, tc.Arguments)
+			if cmd == "" {
+				continue
+			}
+			if CommandMatches(lookup, cmd) {
+				return true
+			}
+			if toolName != "" && toolName != "bash" && tc.Name == toolName {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// extractCommandFromCall extracts the bash "command" argument from a tool call
+// args JSON, or returns the tool name + path for non-bash tools.
+func extractCommandFromCall(name string, argsJSON string) string {
+	if name == "bash" {
+		var args struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+			return ""
+		}
+		return strings.TrimSpace(args.Command)
+	}
+	var args struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args.Path == "" {
+		return name
+	}
+	return name + " " + args.Path
+}
+
+func firstWordSession(s string) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.IndexAny(s, " \t\n"); idx >= 0 {
+		return s[:idx]
+	}
+	return s
+}
+
+// LastTodoWriteFromSession scans session messages for the most recent
+// successful todo_write call and returns its todos. Returns false if none.
+func LastTodoWriteFromSession(msgs []provider.Message) ([]TodoItem, bool) {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		for _, tc := range msgs[i].ToolCalls {
+			if tc.Name != "todo_write" {
+				continue
+			}
+			if i+1 < len(msgs) && msgs[i+1].ToolCallID == tc.ID {
+				content := msgs[i+1].Content
+				if strings.HasPrefix(content, "error:") || strings.HasPrefix(content, "blocked:") {
+					continue
+				}
+			}
+			// Try to extract todos from the tool call arguments
+			var args struct {
+				Todos []TodoItem `json:"todos"`
+			}
+			if err := json.Unmarshal([]byte(tc.Arguments), &args); err == nil && len(args.Todos) > 0 {
+				return args.Todos, true
+			}
+		}
+	}
+	return nil, false
 }
 
 func normalizePath(p string) string {

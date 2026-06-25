@@ -95,7 +95,7 @@ func headingLevel(line string) int {
 
 func verifyBullet(line string) (string, bool) {
 	line = strings.TrimSpace(line)
-	if len(line) < 2 || (line[:2] != "- " && line[:2] != "* ") {
+	if len(line) < 2 || (line[:2] != "- " && line[:2] != "* " && line[:2] != "+ ") {
 		return "", false
 	}
 	body := strings.TrimSpace(line[2:])
@@ -104,5 +104,6 @@ func verifyBullet(line string) (string, bool) {
 		return "", false
 	}
 	command := strings.TrimSpace(body[len(prefix):])
+	command = strings.Trim(command, "\"'`")
 	return command, command != ""
 }

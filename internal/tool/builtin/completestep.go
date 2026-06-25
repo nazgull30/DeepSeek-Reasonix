@@ -8,7 +8,6 @@ import (
 
 	"reasonix/internal/evidence"
 	"reasonix/internal/instruction"
-	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
@@ -259,31 +258,7 @@ func verifyCommandFromSession(ctx context.Context, command string) bool {
 	if !ok {
 		return false
 	}
-	lookup := strings.TrimSuffix(strings.TrimSuffix(strings.TrimSpace(command), "..."), "…")
-	if lookup == "" {
-		return false
-	}
-	toolName := firstWord(lookup)
-	failed := failedCallIDs(msgs)
-
-	for _, msg := range msgs {
-		for _, tc := range msg.ToolCalls {
-			if failed[tc.ID] {
-				continue
-			}
-			cmd := extractCommandFromCall(tc.Name, tc.Arguments)
-			if cmd == "" {
-				continue
-			}
-			if evidence.CommandMatches(lookup, cmd) {
-				return true
-			}
-			if toolName != "" && toolName != "bash" && tc.Name == toolName {
-				return true
-			}
-		}
-	}
-	return false
+	return evidence.CommandProvenInSession(msgs, command)
 }
 
 // verifyPathsFromSession is the diff/files analogue of verifyCommandFromSession:
@@ -295,19 +270,6 @@ func verifyPathsFromSession(ctx context.Context, paths []string, wantWrite bool)
 		return false
 	}
 	return evidence.PathsProvenInSession(msgs, paths, wantWrite)
-}
-
-func failedCallIDs(msgs []provider.Message) map[string]bool {
-	failed := map[string]bool{}
-	for _, msg := range msgs {
-		if msg.Role != provider.RoleTool || msg.ToolCallID == "" {
-			continue
-		}
-		if strings.HasPrefix(msg.Content, "error:") || strings.HasPrefix(msg.Content, "blocked:") {
-			failed[msg.ToolCallID] = true
-		}
-	}
-	return failed
 }
 
 func receiptHint(label string, items []string) string {
@@ -322,33 +284,4 @@ func receiptHint(label string, items []string) string {
 	return fmt.Sprintf("; %s: %q — cite one as it actually ran, or run the check now", label, items)
 }
 
-func firstWord(s string) string {
-	s = strings.TrimSpace(s)
-	if idx := strings.IndexAny(s, " \t\n"); idx >= 0 {
-		return s[:idx]
-	}
-	return s
-}
 
-// extractCommandFromCall extracts the bash "command" argument from a tool call
-// args JSON, or returns the tool name + path for non-bash tools.
-func extractCommandFromCall(name string, argsJSON string) string {
-	if name == "bash" {
-		var args struct {
-			Command string `json:"command"`
-		}
-		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return ""
-		}
-		return strings.TrimSpace(args.Command)
-	}
-	// For non-bash tools, return "name path" so the command "ls ." can match
-	// against a tool call `ls` with path `.`.
-	var args struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || args.Path == "" {
-		return name
-	}
-	return name + " " + args.Path
-}
