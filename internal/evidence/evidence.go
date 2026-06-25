@@ -73,7 +73,7 @@ func (l *Ledger) Record(r Receipt) {
 	r.Command = strings.TrimSpace(r.Command)
 	r.Step = strings.TrimSpace(r.Step)
 	r.Paths = normalizePaths(r.Paths)
-	r.Todos = normalizeTodos(r.Todos)
+	r.Todos = NormalizeTodos(r.Todos)
 	if r.Args != nil {
 		cp := make(json.RawMessage, len(r.Args))
 		copy(cp, r.Args)
@@ -413,7 +413,7 @@ func (l *Ledger) LatestTodos() ([]TodoItem, bool) {
 // prior todo_write baseline, hasBaseline is false and callers should preserve
 // the existing loose validation behavior.
 func (l *Ledger) UnverifiedCompletedTodos(current []TodoItem) (missing []TodoStepMatch, hasBaseline bool) {
-	current = normalizeTodos(current)
+	current = NormalizeTodos(current)
 	if l == nil {
 		return nil, false
 	}
@@ -658,10 +658,10 @@ func todoItemsField(fields map[string]json.RawMessage, key string) []TodoItem {
 	if err := json.Unmarshal(raw, &todos); err != nil {
 		return nil
 	}
-	return normalizeTodos(todos)
+	return NormalizeTodos(todos)
 }
 
-func normalizeTodos(todos []TodoItem) []TodoItem {
+func NormalizeTodos(todos []TodoItem) []TodoItem {
 	out := make([]TodoItem, 0, len(todos))
 	for _, t := range todos {
 		t.Content = strings.TrimSpace(t.Content)
@@ -720,8 +720,49 @@ func (l *Ledger) HasCompleteStepForTodo(content string) bool {
 	return false
 }
 
+// HasCompleteStepForTodoInList is like HasCompleteStepForTodo but additionally
+// tries matchTodoStep against the provided todo list, so index-based step
+// references (e.g. step: "3" for the third todo) are also recognized.
+// content is the todo content text; current is the full todo list.
+func (l *Ledger) HasCompleteStepForTodoInList(content string, current []TodoItem) bool {
+	if l == nil {
+		return false
+	}
+	// Fast path — text match.
+	if l.HasCompleteStepForTodo(content) {
+		return true
+	}
+	// Find the index of this content in the current list and try
+	// the richer index/containment check that hasSuccessfulCompleteStepForTodo
+	// provides.
+	for i, t := range current {
+		if !sameStepText(content, t.Content) && !sameStepText(content, t.ActiveForm) {
+			continue
+		}
+		l.mu.Lock()
+		receipts := append([]Receipt(nil), l.receipts...)
+		l.mu.Unlock()
+		if hasSuccessfulCompleteStepForTodo(receipts, i+1, current) {
+			return true
+		}
+		break
+	}
+	return false
+}
+
 func sameTodoIdentity(a, b TodoItem) bool {
 	return sameStepText(a.Content, b.Content) || sameStepText(a.ActiveForm, b.ActiveForm)
+}
+
+// WasCompletedInPrior reports whether a todo item was already completed in a
+// prior todo list, matching by content identity rather than position.
+func WasCompletedInPrior(todo TodoItem, prior []TodoItem) bool {
+	for _, p := range prior {
+		if todoStatus(p.Status) == "completed" && sameTodoIdentity(todo, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasSuccessfulCompleteStepForTodo(receipts []Receipt, index int, current []TodoItem) bool {
