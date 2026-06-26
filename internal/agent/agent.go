@@ -372,6 +372,16 @@ const (
 // history — are left untouched, so the toggle costs nothing in cache hits.
 func (a *Agent) SetPlanMode(v bool) { a.planMode.Store(v) }
 
+// SetPlanModeAllowedTools replaces the set of tool names that bypass the
+// plan-mode read-only gate. Called after construction when orchestrator tools
+// (agent_spawn, agent_send) need to be exempted dynamically.
+func (a *Agent) SetPlanModeAllowedTools(tools []string) {
+	if a == nil {
+		return
+	}
+	a.planModeAllowedTools = stringSet(tools)
+}
+
 // SetTools replaces the agent's tool registry. The next API call picks up the
 // new tool schema; tools already cached in the provider prefix are unaffected
 // until the prefix is invalidated. Safe to call between turns.

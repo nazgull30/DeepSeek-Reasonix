@@ -582,6 +582,15 @@ func chatREPL(args []string) int {
 			}
 		}
 
+		// Make agent_spawn and agent_send available in plan mode so the main
+		// agent can delegate to child agents (e.g. git) while planning, rather
+		// than being stuck with no allowed writer or delegation tool.
+		allowed := cfg.Agent.PlanModeAllowedTools
+		merged := make([]string, 0, len(allowed)+2)
+		merged = append(merged, allowed...)
+		merged = append(merged, "agent_spawn", "agent_send")
+		ctrl.SetPlanModeAllowedTools(merged)
+
 		if names := orc.AgentNames(); len(names) > 0 {
 			fmt.Fprintf(os.Stderr, "orchestrator: %d managed agent(s) — %s\n", len(names), strings.Join(names, ", "))
 		}
