@@ -1029,6 +1029,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				if !ok {
 					return "", fmt.Errorf("no configured MCP server named %q", name)
 				}
+				if !agentAllowedPlugins[spec.Name] {
+					return "", fmt.Errorf("MCP server %q is not available for this agent", spec.Name)
+				}
 				if opts.Stderr != nil {
 					spec.Stderr = opts.Stderr
 				}

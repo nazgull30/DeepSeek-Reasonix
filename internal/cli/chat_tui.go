@@ -4142,4 +4142,20 @@ type eventSink struct {
 	ch chan<- event.Event
 }
 
-func (s *eventSink) Emit(e event.Event) { s.ch <- e }
+func (s *eventSink) Emit(e event.Event) {
+	select {
+	case s.ch <- e:
+		return
+	default:
+	}
+	// Channel is full — try a bounded wait so the agent never freezes
+	// if the TUI's event processing stalls temporarily.
+	timer := time.NewTimer(time.Second)
+	select {
+	case s.ch <- e:
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
+	}
+}
