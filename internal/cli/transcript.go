@@ -190,6 +190,26 @@ func scrollbarThumb(height, yoff, total int) (start, size int) {
 	return start, size
 }
 
+func scrollbarYOffset(height, row, total, grabOffset int) int {
+	if total <= height {
+		return 0
+	}
+	_, thumbSize := scrollbarThumb(height, 0, total)
+	maxTop := height - thumbSize
+	if maxTop <= 0 {
+		return 0
+	}
+	top := row - grabOffset
+	if top < 0 {
+		top = 0
+	}
+	if top > maxTop {
+		top = maxTop
+	}
+	maxYoff := total - height
+	return (top*maxYoff + maxTop/2) / maxTop
+}
+
 func scrollbarCell(row, total, height, thumbStart, thumbSize int) string {
 	if total <= height {
 		return " "
@@ -198,6 +218,26 @@ func scrollbarCell(row, total, height, thumbStart, thumbSize int) string {
 		return scrollThumbStyle.Render("█")
 	}
 	return scrollTrackStyle.Render("│")
+}
+
+func (m chatTUI) inScrollbar(x, y int) bool {
+	if m.nativeScrollback {
+		return false
+	}
+	h := m.viewport.Height()
+	return h > 0 && y >= 0 && y < h && x == m.viewport.Width() && len(m.wrappedLines) > h
+}
+
+func (m chatTUI) scrollbarGrabRowOffset(row int) int {
+	thumbStart, thumbSize := scrollbarThumb(m.viewport.Height(), m.viewport.YOffset(), len(m.wrappedLines))
+	if row >= thumbStart && row < thumbStart+thumbSize {
+		return row - thumbStart
+	}
+	return thumbSize / 2
+}
+
+func (m *chatTUI) dragScrollbar(row int) {
+	m.viewport.SetYOffset(scrollbarYOffset(m.viewport.Height(), row, len(m.wrappedLines), m.scrollbarGrabOffset))
 }
 
 // transcriptCaret maps a screen cell (x, y) in the transcript region to an

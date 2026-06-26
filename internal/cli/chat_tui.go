@@ -195,6 +195,11 @@ type chatTUI struct {
 	// column the drag is held at, so the ticker can extend the selection head.
 	autoScroll int
 	dragX      int
+	// scrollbarDrag owns left-button drags that start on the transcript scrollbar
+	// column. It is separate from text selection so the visual thumb is not a
+	// dead target and dragging it never leaves a transcript selection behind.
+	scrollbarDrag       bool
+	scrollbarGrabOffset int
 
 	// The user bubble is echoed to scrollback immediately on Enter (bubbleStartIdx
 	// marks where in the transcript it landed). It stays "un-sendable" until the
@@ -326,6 +331,16 @@ type agentEventMsg event.Event
 // maxEventDrain caps how many buffered events one Update coalesces before
 // yielding to render, so a sustained output flood still shows live progress.
 const maxEventDrain = 512
+
+const resetMouseTracking = ansi.ResetModeMouseX10 +
+	ansi.ResetModeMouseNormal +
+	ansi.ResetModeMouseHighlight +
+	ansi.ResetModeMouseButtonEvent +
+	ansi.ResetModeMouseAnyEvent +
+	ansi.ResetModeMouseExtSgr +
+	ansi.ResetModeMouseExtUtf8 +
+	ansi.ResetModeMouseExtUrxvt +
+	ansi.ResetModeMouseExtSgrPixel
 
 // compactDoneMsg reports that an async /compact pass returned. The card was
 // already drawn from the CompactionDone event; this only surfaces a failure and
@@ -687,6 +702,10 @@ func (m chatTUI) Init() tea.Cmd {
 	)
 }
 
+func suspendWithMouseReset() tea.Cmd {
+	return tea.Sequence(tea.Raw(resetMouseTracking), tea.Suspend)
+}
+
 func (m chatTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	wasAtBottom := m.viewport.AtBottom()
 	prevLines := len(m.transcript)
@@ -765,11 +784,19 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		// Right-click copies the active selection (Windows Terminal convention);
 		// left-press in the transcript region begins a text selection — unless
-		// the click lands on a shell-output hint line, which toggles expand.
+		// the click lands on the scrollbar or a shell-output hint line.
 		if msg.Button == tea.MouseRight && m.sel.active && !m.sel.empty() {
 			text := m.selectedText()
 			m.sel = selection{}
 			return m, tea.Batch(copyToClipboard(text), finalize(m, cmds))
+		}
+		if msg.Button == tea.MouseLeft && m.inScrollbar(msg.X, msg.Y) {
+			m.sel = selection{}
+			m.autoScroll = 0
+			m.scrollbarDrag = true
+			m.scrollbarGrabOffset = m.scrollbarGrabRowOffset(msg.Y)
+			m.dragScrollbar(msg.Y)
+			return m, nil
 		}
 		if msg.Button == tea.MouseLeft && msg.Y < m.viewport.Height() {
 			// Check if the clicked line is a shell-output hint.
@@ -788,6 +815,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseMotionMsg:
+		if m.scrollbarDrag {
+			m.dragScrollbar(msg.Y)
+			return m, nil
+		}
 		// Drag extends the live selection (CellMotion only reports motion while
 		// a button is held, so this is a drag). A drag held against the top or
 		// bottom edge starts an auto-scroll ticker so the selection can run past
@@ -829,6 +860,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Release finalizes the selection; the highlight stays on as the visual
 		// "what's selected" cue and a right-click copies it. A plain click (no
 		// drag) clears any prior selection.
+		if m.scrollbarDrag {
+			m.dragScrollbar(msg.Y)
+			m.scrollbarDrag = false
+			m.scrollbarGrabOffset = 0
+			return m, nil
+		}
 		m.autoScroll = 0 // stop edge auto-scroll
 		if msg.Button == tea.MouseLeft && m.sel.active && m.sel.empty() {
 			m.sel = selection{}
@@ -872,7 +909,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 			return m, finalize(m, cmds)
 		case "ctrl+z":
-			return m, tea.Suspend
+			return m, suspendWithMouseReset()
 		}
 		// A question card is modal: keys drive it. In its free-text ("Type
 		// something") mode, the keystroke goes to the textarea — Enter confirms the

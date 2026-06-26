@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -888,6 +889,134 @@ func TestCtrlHomeEndScrollKeyBindings(t *testing.T) {
 	}
 }
 
+func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	ch := make(chan event.Event, 1)
+	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
+	adv := func(m chatTUI, msg tea.Msg) chatTUI {
+		n, _ := m.Update(msg)
+		return n.(chatTUI)
+	}
+
+	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	for i := 0; i < 40; i++ {
+		cur = adv(cur, notice)
+	}
+	if !cur.viewport.AtBottom() {
+		t.Fatal("viewport should start at bottom after overflowing output")
+	}
+	bottom := cur.viewport.YOffset()
+	if bottom <= cur.viewport.Height()+3 {
+		t.Fatalf("test transcript did not overflow enough: bottom=%d height=%d", bottom, cur.viewport.Height())
+	}
+
+	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if got, want := cur.viewport.YOffset(), bottom-3; got != want {
+		t.Fatalf("wheel-up YOffset = %d, want %d", got, want)
+	}
+
+	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got := cur.viewport.YOffset(); got != bottom {
+		t.Fatalf("wheel-down should return by one wheel step, YOffset=%d want bottom=%d", got, bottom)
+	}
+
+	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgUp})
+	pageUp := cur.viewport.YOffset()
+	if got, want := pageUp, bottom-cur.viewport.Height(); got != want {
+		t.Fatalf("PageUp YOffset = %d, want %d", got, want)
+	}
+
+	cur = adv(cur, tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if got := cur.viewport.YOffset(); got != bottom {
+		t.Fatalf("PageDown should return to bottom from one page up, YOffset=%d want %d", got, bottom)
+	}
+}
+
+func TestRunningStreamPreservesScrolledReadingPosition(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	ch := make(chan event.Event, 1)
+	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
+	adv := func(m chatTUI, msg tea.Msg) chatTUI {
+		n, _ := m.Update(msg)
+		return n.(chatTUI)
+	}
+
+	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	for i := 0; i < 40; i++ {
+		cur = adv(cur, notice)
+	}
+	cur.state = tuiRunning
+	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	readOffset := cur.viewport.YOffset()
+	if cur.viewport.AtBottom() {
+		t.Fatal("wheel-up should leave the bottom before streaming output arrives")
+	}
+
+	cur = adv(cur, agentEventMsg(event.Event{Kind: event.Text, Text: "streamed paragraph\n\n"}))
+	if cur.viewport.AtBottom() {
+		t.Fatal("streaming output must not yank a scrolled-up reader back to bottom")
+	}
+	if got := cur.viewport.YOffset(); got != readOffset {
+		t.Fatalf("streaming output should preserve reading offset, got %d want %d", got, readOffset)
+	}
+
+	cur = adv(cur, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if got, want := cur.viewport.YOffset(), readOffset+3; got != want {
+		t.Fatalf("wheel-down while running should move one wheel step, got %d want %d", got, want)
+	}
+	if cur.viewport.AtBottom() {
+		t.Fatal("one wheel-down step from the reading position should not jump straight to bottom")
+	}
+}
+
+func TestTranscriptScrollbarClickAndDrag(t *testing.T) {
+	ctrl := control.New(control.Options{})
+	ch := make(chan event.Event, 1)
+	notice := agentEventMsg(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: "line"})
+	adv := func(m chatTUI, msg tea.Msg) chatTUI {
+		n, _ := m.Update(msg)
+		return n.(chatTUI)
+	}
+
+	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	for i := 0; i < 40; i++ {
+		cur = adv(cur, notice)
+	}
+	cur.viewport.GotoTop()
+	barX := cur.viewport.Width()
+	bottomRow := cur.viewport.Height() - 1
+
+	cur = adv(cur, tea.MouseClickMsg{X: barX, Y: 0, Button: tea.MouseLeft})
+	if cur.sel.active {
+		t.Fatal("clicking the scrollbar must not start transcript selection")
+	}
+	if !cur.scrollbarDrag {
+		t.Fatal("left-click on scrollbar should start scrollbar drag")
+	}
+
+	cur = adv(cur, tea.MouseMotionMsg{X: barX, Y: bottomRow, Button: tea.MouseLeft})
+	if !cur.viewport.AtBottom() {
+		t.Fatalf("dragging scrollbar to bottom should reach bottom, YOffset=%d", cur.viewport.YOffset())
+	}
+	if cur.sel.active {
+		t.Fatal("dragging the scrollbar must not leave a transcript selection")
+	}
+
+	cur = adv(cur, tea.MouseReleaseMsg{X: barX, Y: bottomRow, Button: tea.MouseLeft})
+	if cur.scrollbarDrag {
+		t.Fatal("mouse release should end scrollbar drag")
+	}
+	if cur.sel.active {
+		t.Fatal("scrollbar release must not create a text selection")
+	}
+
+	cur.viewport.GotoTop()
+	cur = adv(cur, tea.MouseClickMsg{X: barX - 1, Y: 0, Button: tea.MouseLeft})
+	if !cur.sel.active {
+		t.Fatal("clicking the transcript content column next to the scrollbar should still start selection")
+	}
+}
+
 func TestEchoLocalCommandAddsTranscriptMarker(t *testing.T) {
 	m := newTestChatTUI()
 	m.echoLocalCommand("  /tree  ")
@@ -1732,16 +1861,85 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	}
 }
 
-func TestCtrlZSendsSuspend(t *testing.T) {
+func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
+	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
+	ctrl.Send("hi")
+	<-r.started
+	defer close(r.release)
+
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+	m.state = tuiRunning
+	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+	_, firstCmd := m.Update(ctrlC)
+	if firstCmd != nil {
+		t.Fatal("first Ctrl+C while running should request cancel, not quit")
+	}
+	if st := ctrl.RuntimeStatus(); !st.Running || !st.CancelRequested {
+		t.Fatalf("first Ctrl+C status = %+v, want running cancel requested", st)
+	}
+
+	_, secondCmd := m.Update(ctrlC)
+	if secondCmd == nil {
+		t.Fatal("second Ctrl+C after cancel request should quit")
+	}
+	if msg := secondCmd(); msg != (tea.QuitMsg{}) {
+		t.Fatalf("second Ctrl+C command = %T, want tea.QuitMsg", msg)
+	}
+}
+
+func TestRunningStatusShowsCancelRequested(t *testing.T) {
+	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
+	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
+	ctrl.Send("hi")
+	<-r.started
+	defer close(r.release)
+
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+	m.state = tuiRunning
+	m.width = 80
+	m.height = 24
+	ctrl.Cancel()
+
+	view := ansi.Strip(m.View().Content)
+	if !strings.Contains(view, "stopping") {
+		t.Fatalf("running status after cancel should show stopping feedback:\n%s", view)
+	}
+}
+
+func TestCtrlZResetsMouseTrackingBeforeSuspend(t *testing.T) {
 	m := newTestChatTUI()
 	ctrlZ := tea.KeyPressMsg{Code: 'z', Mod: tea.ModCtrl}
 
 	_, cmd := m.Update(ctrlZ)
 	if cmd == nil {
-		t.Fatal("expected Ctrl+Z to return a suspend command")
+		t.Fatal("expected Ctrl+Z to return a suspend sequence")
 	}
-	if msg := cmd(); msg != (tea.SuspendMsg{}) {
-		t.Fatalf("expected tea.SuspendMsg, got %T", msg)
+	msg := cmd()
+	seq := reflect.ValueOf(msg)
+	if seq.Kind() != reflect.Slice || seq.Len() != 2 {
+		t.Fatalf("expected Ctrl+Z to return a two-command sequence, got %T", msg)
+	}
+	first, ok := seq.Index(0).Interface().(tea.Cmd)
+	if !ok {
+		t.Fatalf("first sequence item is %T, want tea.Cmd", seq.Index(0).Interface())
+	}
+	raw, ok := first().(tea.RawMsg)
+	if !ok {
+		t.Fatalf("first Ctrl+Z command = %T, want tea.RawMsg", first())
+	}
+	if got := fmt.Sprint(raw.Msg); got != resetMouseTracking {
+		t.Fatalf("Ctrl+Z mouse reset = %q, want %q", got, resetMouseTracking)
+	}
+	second, ok := seq.Index(1).Interface().(tea.Cmd)
+	if !ok {
+		t.Fatalf("second sequence item is %T, want tea.Cmd", seq.Index(1).Interface())
+	}
+	if msg := second(); msg != (tea.SuspendMsg{}) {
+		t.Fatalf("second Ctrl+Z command = %T, want tea.SuspendMsg", msg)
 	}
 }
 
