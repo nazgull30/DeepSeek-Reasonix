@@ -1816,6 +1816,16 @@ func (c *Controller) SetPlanMode(v bool) {
 	}
 }
 
+// SetPlanModeAllowedTools replaces the set of tool names exempt from the
+// plan-mode read-only gate on the executor agent. Propagated to the executor so
+// tools registered after construction (e.g. orchestrator agent_spawn/agent_send)
+// can bypass the gate during planning.
+func (c *Controller) SetPlanModeAllowedTools(tools []string) {
+	if c.executor != nil {
+		c.executor.SetPlanModeAllowedTools(tools)
+	}
+}
+
 // SetAutoPlan updates the interactive auto-plan gate for subsequent turns.
 func (c *Controller) SetAutoPlan(mode string) {
 	c.mu.Lock()
