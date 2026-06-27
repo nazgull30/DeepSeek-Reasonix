@@ -1111,12 +1111,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.queueEditCursor >= 0 && m.queueEditCursor < len(m.pendingInterject) {
 					// Save the edited text back to the queue slot.
-					m.pendingInterject[m.queueEditCursor] = line
+					m.pendingInterject[m.queueEditCursor] = m.expandPastedBlocks(line)
 					m.notice(fmt.Sprintf("queue [%d] updated", m.queueEditCursor+1))
 					m.queueEditCursor = -1
 					m.queueEditDraft = ""
 				} else {
-					m.pendingInterject = append(m.pendingInterject, line)
+					m.pendingInterject = append(m.pendingInterject, m.expandPastedBlocks(line))
 					m.notice("feedback queued — will send when the current turn finishes")
 					m.queueEditCursor = -1
 					m.queueEditDraft = ""
