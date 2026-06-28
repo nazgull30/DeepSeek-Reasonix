@@ -1029,6 +1029,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				if !ok {
 					return "", fmt.Errorf("no configured MCP server named %q", name)
 				}
+				if !agentAllowedPlugins[spec.Name] {
+					return "", fmt.Errorf("MCP server %q is not available for this agent", spec.Name)
+				}
 				if opts.Stderr != nil {
 					spec.Stderr = opts.Stderr
 				}
@@ -1160,7 +1163,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Registry:               reg,
 		PluginCtx:              ctx,
 		WorkspaceRoot:          root,
-		AutoPlan:               cfg.Agent.AutoPlan,
+		AutoPlan:               autoPlanForAgent(cfg.Agent.AutoPlan, opts.AgentName),
 		ReasoningLanguage:      cfg.ReasoningLanguage(),
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
@@ -1611,4 +1614,14 @@ func providerNames(cfg *config.Config) string {
 		names[i] = p.Name
 	}
 	return strings.Join(names, "/")
+}
+
+// autoPlanForAgent returns the auto-plan setting to use. Child agents
+// (non-empty AgentName) always get "off" so they never enter plan mode
+// and block their own MCP write tools.
+func autoPlanForAgent(autoPlan, agentName string) string {
+	if agentName != "" {
+		return "off"
+	}
+	return autoPlan
 }

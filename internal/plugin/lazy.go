@@ -89,22 +89,25 @@ func (s *lazySpawn) kick() {
 // run does the handshake without holding mu (host.Add can take seconds), then
 // reacquires mu to publish the result.
 func (s *lazySpawn) run() {
-	real, err := s.host.Add(s.ctx, s.spec)
+	callCtx, cancel := context.WithTimeout(s.ctx, defaultStartTimeout)
+	defer cancel()
+	real, err := s.host.AddWithLifecycle(s.ctx, callCtx, s.spec)
 	var cacheTools []tool.Tool
 	s.mu.Lock()
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			s.state = spawnIdle
+			s.spawnErr = nil
+			s.mu.Unlock()
+			return
+		}
 		if errors.Is(err, ErrSpawningInFlight) {
-			// Another tab is already spawning this server; reset to idle so
-			// the next call retries instead of recording a spurious failure.
 			s.state = spawnIdle
 			s.spawnErr = nil
 			s.mu.Unlock()
 			return
 		}
 		if IsServerAlreadyConnected(err) {
-			// The server was already started by another controller sharing
-			// the same host. Fetch the tools from the existing client
-			// instead of entering the failed state.
 			if tools, err2 := s.host.ToolsFor(s.ctx, s.spec.Name); err2 == nil {
 				s.real = make(map[string]tool.Tool, len(tools))
 				for _, t := range tools {
@@ -117,8 +120,6 @@ func (s *lazySpawn) run() {
 				saveLazyCachedSchema(s.spec, cacheTools)
 				return
 			}
-			// ToolsFor failed — still not a real failure; just mark failed
-			// without recording it so /mcp status stays clean.
 			s.state = spawnFailed
 			s.spawnErr = err
 			s.mu.Unlock()

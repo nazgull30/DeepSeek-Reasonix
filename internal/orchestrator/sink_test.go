@@ -207,8 +207,11 @@ func TestSinkEmitMessageNonVerbose(t *testing.T) {
 	m.Emit(event.Event{Kind: event.Message, Text: "should be dropped"})
 
 	events := get()
-	if len(events) != 0 {
-		t.Fatalf("expected 0 events with verbose=false, got %d", len(events))
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event (condensed notice), got %d", len(events))
+	}
+	if events[0].Kind != event.Notice {
+		t.Fatalf("expected Notice kind for condensed message, got %v", events[0].Kind)
 	}
 }
 

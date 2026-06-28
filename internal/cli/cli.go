@@ -498,7 +498,7 @@ func chatREPL(args []string) int {
 	// can become a tea.Msg inside the TUI's update loop. Buffered generously:
 	// streaming bursts (tool results, long answers) shouldn't backpressure the
 	// agent goroutine.
-	eventCh := make(chan event.Event, 1024)
+	eventCh := make(chan event.Event, 16384)
 
 	var sink event.Sink = &eventSink{ch: eventCh}
 	sink = withNotifications(sink, cfg)
@@ -550,7 +550,7 @@ func chatREPL(args []string) int {
 				fmt.Fprintln(os.Stderr, "orchestrator: failed to start agent", entry.Name+":", cerr)
 				continue
 			}
-			orc.AddAgent(entry.Name, childCtrl, entry)
+			orc.AddAgent(entry.Name, childCtrl, entry, agentSink)
 		}
 		orc.SetSessionDir(resolveCLISessionDir())
 		if err := orc.LoadSessions(resolveCLISessionDir()); err != nil {

@@ -58,6 +58,12 @@ func (m *SinkMultiplexer) Emit(e event.Event) {
 		if verbose {
 			e.Text = fmt.Sprintf("[%s] %s", m.agentName, e.Text)
 			m.parentSink.Emit(e)
+		} else {
+			// Show a condensed one-liner so the user sees the agent responded.
+			m.parentSink.Emit(event.Event{
+				Kind: event.Notice,
+				Text: fmt.Sprintf("[%s] responded", m.agentName),
+			})
 		}
 
 	case event.Reasoning:
@@ -71,6 +77,9 @@ func (m *SinkMultiplexer) Emit(e event.Event) {
 
 	case event.Phase:
 		e.Text = fmt.Sprintf("%s: %s", m.agentName, e.Text)
+		m.parentSink.Emit(e)
+
+	case event.TurnStarted, event.TurnDone, event.Retrying, event.Steer:
 		m.parentSink.Emit(e)
 	}
 }
