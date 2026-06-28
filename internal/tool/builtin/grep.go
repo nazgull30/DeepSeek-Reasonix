@@ -72,9 +72,9 @@ func (grepTool) Name() string { return "grep" }
 
 func (g grepTool) Description() string {
 	if g.rg != "" {
-		return "Search for a regular expression in a file, or recursively under a directory — ripgrep-backed, so it honors .gitignore. Returns matching lines as path:line:text, capped at 200 matches."
+		return "Search for a regular expression in a file, or recursively under a directory — ripgrep-backed, so it honors .gitignore. Returns matching lines as path:line:text, capped at 200 matches. For source code, prefer mcp__codegraph__search."
 	}
-	return "Search for a regular expression in a file, or recursively under a directory (skips hidden files and files matched by .gitignore). Returns matching lines as path:line:text, capped at 200 matches."
+	return "Search for a regular expression in a file, or recursively under a directory (skips hidden files and files matched by .gitignore). Returns matching lines as path:line:text, capped at 200 matches. For source code, prefer mcp__codegraph__search."
 }
 
 func (grepTool) Schema() json.RawMessage {
