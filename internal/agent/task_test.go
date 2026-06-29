@@ -403,6 +403,142 @@ func TestSubSinkForwardsUsageToParent(t *testing.T) {
 	}
 }
 
+// TestForkCacheSharing verifies the cache_from_parent fork subagent flow:
+//   - The forked subagent inherits the parent's stable conversation prefix
+//     (all complete rounds, i.e. messages before the last in-flight round)
+//   - The fork guard tag (ForkPlaceholderTag) is injected as the first user
+//     message so IsForkChild can detect recursive forking
+//   - Multiple fork children share the exact same message prefix (inherited
+//     parent messages + fork guard tag) up to the task prompt, enabling
+//     server-side prompt cache sharing
+//   - Missing parent messages wiring produces a clear error
+//   - Recursive forking (fork inside a fork) is rejected
+func TestForkCacheSharing(t *testing.T) {
+	// Parent conversation: system, two Q&A turns, then a complete
+	// assistant+tools round (assistant with ToolCalls → tool result →
+	// assistant response). BuildForkSession inherits up to the boundary
+	// determined by lastCompleteRound — the assistant text after the tool
+	// result is excluded because the fork child writes its own response.
+	parentMsgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "You are a helpful assistant."},
+		{Role: provider.RoleUser, Content: "What does the codebase do?"},
+		{Role: provider.RoleAssistant, Content: "It's a Go project for coding agents."},
+		{Role: provider.RoleUser, Content: "Find all callers of Foo"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{
+			{ID: "c1", Name: "grep", Arguments: `{"pattern":"Foo"}`},
+		}, Content: "Searching..."},
+		{Role: provider.RoleTool, ToolCallID: "c1", Content: "main.go:42\nutil.go:15"},
+		{Role: provider.RoleAssistant, Content: "Found callers in main.go and util.go."},
+	}
+	// Expected inherited prefix: parentMsgs up to lastCompleteRound (index 6
+	// = boundary) = indices 0-5. Then fork guard, then the task prompt.
+	inheritBoundary := 6
+
+	rs := NewContentReplacementState(t.TempDir())
+	sub := &mockProvider{name: "sub", streams: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "analysis complete"}, {Type: provider.ChunkDone}},
+		{{Type: provider.ChunkText, Text: "refactoring done"}, {Type: provider.ChunkDone}},
+	}}
+
+	reg := tool.NewRegistry()
+	task := newTestTaskTool(t, sub, reg, "ignored-sys", "", "", nil).
+		WithParentMessages(func() []provider.Message { return parentMsgs }).
+		WithParentResultState(func() *ContentReplacementState { return rs })
+
+	// --- First fork child ---
+	out1, err := task.Execute(testTaskContext(), []byte(`{"prompt":"analyze callers","cache_from_parent":true}`))
+	if err != nil {
+		t.Fatalf("first fork: %v", err)
+	}
+	if !strings.Contains(out1, "analysis complete") {
+		t.Errorf("first fork answer = %q, want 'analysis complete'", out1)
+	}
+
+	if len(sub.requests) < 1 {
+		t.Fatal("no provider requests recorded for first fork")
+	}
+	req1 := sub.requests[0]
+
+	// Verify inherited parent messages at the start of the request
+	for i := 0; i < inheritBoundary; i++ {
+		got := req1.Messages[i]
+		if got.Role != parentMsgs[i].Role || got.Content != parentMsgs[i].Content || len(got.ToolCalls) != len(parentMsgs[i].ToolCalls) {
+			t.Errorf("message[%d] mismatch:\n  got:  %+v\n  want: %+v", i, got, parentMsgs[i])
+		}
+	}
+
+	// Verify fork guard tag at the boundary position
+	if req1.Messages[inheritBoundary].Role != provider.RoleUser || req1.Messages[inheritBoundary].Content != ForkPlaceholderTag {
+		t.Errorf("message[%d] expected fork guard (%q), got %+v", inheritBoundary, ForkPlaceholderTag, req1.Messages[inheritBoundary])
+	}
+
+	// Verify task prompt follows the fork guard
+	promptIdx := inheritBoundary + 1
+	if req1.Messages[promptIdx].Role != provider.RoleUser || req1.Messages[promptIdx].Content != "analyze callers" {
+		t.Errorf("message[%d] expected prompt 'analyze callers', got %+v", promptIdx, req1.Messages[promptIdx])
+	}
+
+	// --- Second fork child (different prompt, same prefix) ---
+	out2, err := task.Execute(testTaskContext(), []byte(`{"prompt":"refactor callers","cache_from_parent":true}`))
+	if err != nil {
+		t.Fatalf("second fork: %v", err)
+	}
+	if !strings.Contains(out2, "refactoring done") {
+		t.Errorf("second fork answer = %q, want 'refactoring done'", out2)
+	}
+
+	if len(sub.requests) < 2 {
+		t.Fatal("no provider requests recorded for second fork")
+	}
+	req2 := sub.requests[1]
+
+	// Both forks must have identical prefix (inherited parent messages + fork guard)
+	for i := 0; i <= inheritBoundary; i++ {
+		m1, m2 := req1.Messages[i], req2.Messages[i]
+		if m1.Role != m2.Role || m1.Content != m2.Content || len(m1.ToolCalls) != len(m2.ToolCalls) {
+			t.Errorf("prefix mismatch at index %d:\n  req1: %+v\n  req2: %+v", i, m1, m2)
+		}
+		for j := range m1.ToolCalls {
+			tc1, tc2 := m1.ToolCalls[j], m2.ToolCalls[j]
+			if tc1.ID != tc2.ID || tc1.Name != tc2.Name || tc1.Arguments != tc2.Arguments {
+				t.Errorf("tool call mismatch at message[%d].ToolCalls[%d]:\n  req1: %+v\n  req2: %+v",
+					i, j, tc1, tc2)
+			}
+		}
+	}
+
+	// Second fork's prompt differs
+	if req2.Messages[promptIdx].Content != "refactor callers" {
+		t.Errorf("message[%d] expected prompt 'refactor callers', got %+v", promptIdx, req2.Messages[promptIdx])
+	}
+
+	// --- Error: cache_from_parent without WithParentMessages (explicit flag, missing wiring) ---
+	taskNoParent := newTestTaskTool(t, sub, reg, "sys", "", "", nil)
+	_, err = taskNoParent.Execute(testTaskContext(), []byte(`{"prompt":"test","cache_from_parent":true}`))
+	if err == nil || !strings.Contains(err.Error(), "not available in this context") {
+		t.Errorf("expected 'not available' error, got %v", err)
+	}
+
+	// --- Recursive fork falls back gracefully ---
+	// When parent messages already contain the fork guard tag, cache_from_parent
+	// silently skips the fork and runs a normal session instead of erroring.
+	sub.streams = append(sub.streams, []provider.Chunk{
+		{Type: provider.ChunkText, Text: "fallback result"}, {Type: provider.ChunkDone},
+	})
+	recursiveMsgs := make([]provider.Message, len(parentMsgs), len(parentMsgs)+1)
+	copy(recursiveMsgs, parentMsgs)
+	recursiveMsgs = append(recursiveMsgs, provider.Message{Role: provider.RoleUser, Content: ForkPlaceholderTag})
+	taskRecurse := newTestTaskTool(t, sub, reg, "sys", "", "", nil).
+		WithParentMessages(func() []provider.Message { return recursiveMsgs })
+	out3, err := taskRecurse.Execute(testTaskContext(), []byte(`{"prompt":"test","cache_from_parent":true}`))
+	if err != nil {
+		t.Errorf("recursive fork should fall back, got error: %v", err)
+	}
+	if !strings.Contains(out3, "fallback result") {
+		t.Errorf("recursive fallback result = %q, want 'fallback result'", out3)
+	}
+}
+
 func TestTaskToolCarriesRecentKeepIntoSubsessions(t *testing.T) {
 	task := NewTaskTool(&mockProvider{name: "sub"}, nil, tool.NewRegistry(), 20, 0, 7, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil, nil)
 	if task.recentKeep != 7 {

@@ -24,7 +24,7 @@ type writeFile struct {
 func (writeFile) Name() string { return "write_file" }
 
 func (writeFile) Description() string {
-	return "Write content to a file at the given path (overwriting existing content). Creates parent directories as needed."
+	return "Write content to a file at the given path (overwriting existing content). Creates parent directories as needed. Use only for new files or full rewrites — for targeted changes, prefer edit_file or multi_edit: they send only the diff, not the full file, using far fewer tokens."
 }
 
 func (writeFile) Schema() json.RawMessage {

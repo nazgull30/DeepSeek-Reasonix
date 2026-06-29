@@ -320,6 +320,18 @@ type Agent struct {
 	// Populated from Options.PlanModeAllowedTools during construction.
 	planModeAllowedTools map[string]bool
 
+	// resultState tracks tool results that have been persisted to disk with a
+	// preview substitute. Once a replacement decision is made it is frozen, so
+	// byte-identical message prefixes are preserved for fork children. nil means
+	// no overflow handling — every tool result is kept verbatim.
+	resultState *ContentReplacementState
+
+	// lastProviderCall records when the last successful provider stream completed.
+	// Used by time-based micro-compaction to detect cache expiry.
+	lastProviderCall      time.Time
+	timeBasedCompactRatio float64
+	cacheIdleTTL          time.Duration
+
 	// Context management: when a turn's prompt nears contextWindow, the older
 	// middle of the session is summarized away, keeping a token-bounded recent
 	// tail verbatim (recentKeep is the message floor) and archiving the originals
@@ -616,6 +628,25 @@ type Options struct {
 	// MemoryQueue is the controller's memory-apply sink, carried by remember/forget
 	// tools. When set on a sub-agent, memory writes flow to the parent's controller.
 	MemoryQueue memory.Queue
+
+	// ResultState is the frozen tool-result overflow state for this conversation.
+	// When set, tool results exceeding the inline budget are persisted to disk and
+	// replaced with a preview. The state is cloned for fork children so they share
+	// the same byte-identical message prefix. nil means no overflow handling.
+	ResultState *ContentReplacementState
+
+	// TimeBasedCompactRatio, when > 0, enables time-based (idle) micro-compaction.
+	// If the provider prompt cache has likely expired (the agent has been idle for
+	// CacheIdleTTL) and the prompt exceeds this fraction of the context window, a
+	// compaction runs proactively to reduce the cache-miss cost of the next user
+	// turn. Defaults to 0 (disabled). A typical value is 0.35 (35% of the window).
+	TimeBasedCompactRatio float64
+
+	// CacheIdleTTL is the idle duration after which the provider-side prompt cache
+	// is considered expired. Used by time-based micro-compaction when
+	// TimeBasedCompactRatio > 0. Defaults to 5 minutes when set to 0 with
+	// TimeBasedCompactRatio > 0.
+	CacheIdleTTL time.Duration
 }
 
 func stringSet(ss []string) map[string]bool {
@@ -685,6 +716,12 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		keepPolicy:           opts.KeepPolicy,
 		planModeAllowedTools: stringSet(opts.PlanModeAllowedTools),
 		memQueue:             opts.MemoryQueue,
+		resultState:          opts.ResultState,
+		timeBasedCompactRatio: opts.TimeBasedCompactRatio,
+		cacheIdleTTL:          opts.CacheIdleTTL,
+	}
+	if a.timeBasedCompactRatio > 0 && a.cacheIdleTTL <= 0 {
+		a.cacheIdleTTL = 5 * time.Minute
 	}
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
@@ -1278,6 +1315,7 @@ func (a *Agent) stream(ctx context.Context, turn int) (string, string, string, [
 	if text.Len() > 0 || display != "" {
 		a.sink.Emit(event.Event{Kind: event.Message, Text: StripGoalMarkers(text.String()), Reasoning: display})
 	}
+	a.lastProviderCall = time.Now()
 	return text.String(), stored, signature, calls, usage, false, false, nil
 }
 
@@ -1346,13 +1384,13 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 		}
 	}
 
-	for i, c := range calls {
+	for i, call := range calls {
 		o := outcomes[i]
-		t, ok := a.tools.Get(c.Name)
+		t, ok := a.tools.Get(call.Name)
 		a.sink.Emit(event.Event{Kind: event.ToolResult, Tool: event.Tool{
-			ID:         c.ID,
-			Name:       c.Name,
-			Args:       c.Arguments,
+			ID:         call.ID,
+			Name:       call.Name,
+			Args:       call.Arguments,
 			Output:     o.output,
 			Err:        o.errMsg,
 			ReadOnly:   ok && t.ReadOnly(),
@@ -1364,6 +1402,17 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 		}
 	}
 	a.applyStormBreaker(calls, outcomes, results)
+	// Apply frozen tool-result replacement before results enter the session.
+	// Large outputs are persisted to disk and replaced with a preview. The
+	// replacement state is frozen so the same result always produces the
+	// same preview — critical for byte-identical message prefixes.
+	for i := range results {
+		if a.resultState != nil && outcomes[i].errMsg == "" && !outcomes[i].blocked {
+			if replaced, ok := a.resultState.MaybeReplace(calls[i].ID, results[i], calls[i].Name); ok {
+				results[i] = replaced
+			}
+		}
+	}
 	return results
 }
 
