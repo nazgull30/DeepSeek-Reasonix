@@ -443,7 +443,7 @@ func TestForkCacheSharing(t *testing.T) {
 	reg := tool.NewRegistry()
 	task := newTestTaskTool(t, sub, reg, "ignored-sys", "", "", nil).
 		WithParentMessages(func() []provider.Message { return parentMsgs }).
-		WithParentResultState(rs)
+		WithParentResultState(func() *ContentReplacementState { return rs })
 
 	// --- First fork child ---
 	out1, err := task.Execute(testTaskContext(), []byte(`{"prompt":"analyze callers","cache_from_parent":true}`))
@@ -512,22 +512,30 @@ func TestForkCacheSharing(t *testing.T) {
 		t.Errorf("message[%d] expected prompt 'refactor callers', got %+v", promptIdx, req2.Messages[promptIdx])
 	}
 
-	// --- Error: cache_from_parent without WithParentMessages ---
+	// --- Error: cache_from_parent without WithParentMessages (explicit flag, missing wiring) ---
 	taskNoParent := newTestTaskTool(t, sub, reg, "sys", "", "", nil)
 	_, err = taskNoParent.Execute(testTaskContext(), []byte(`{"prompt":"test","cache_from_parent":true}`))
 	if err == nil || !strings.Contains(err.Error(), "not available in this context") {
 		t.Errorf("expected 'not available' error, got %v", err)
 	}
 
-	// --- Error: recursive fork (parent messages already contain fork guard) ---
+	// --- Recursive fork falls back gracefully ---
+	// When parent messages already contain the fork guard tag, cache_from_parent
+	// silently skips the fork and runs a normal session instead of erroring.
+	sub.streams = append(sub.streams, []provider.Chunk{
+		{Type: provider.ChunkText, Text: "fallback result"}, {Type: provider.ChunkDone},
+	})
 	recursiveMsgs := make([]provider.Message, len(parentMsgs), len(parentMsgs)+1)
 	copy(recursiveMsgs, parentMsgs)
 	recursiveMsgs = append(recursiveMsgs, provider.Message{Role: provider.RoleUser, Content: ForkPlaceholderTag})
 	taskRecurse := newTestTaskTool(t, sub, reg, "sys", "", "", nil).
 		WithParentMessages(func() []provider.Message { return recursiveMsgs })
-	_, err = taskRecurse.Execute(testTaskContext(), []byte(`{"prompt":"test","cache_from_parent":true}`))
-	if err == nil || !strings.Contains(err.Error(), "recursive fork rejected") {
-		t.Errorf("expected 'recursive fork rejected' error, got %v", err)
+	out3, err := taskRecurse.Execute(testTaskContext(), []byte(`{"prompt":"test","cache_from_parent":true}`))
+	if err != nil {
+		t.Errorf("recursive fork should fall back, got error: %v", err)
+	}
+	if !strings.Contains(out3, "fallback result") {
+		t.Errorf("recursive fallback result = %q, want 'fallback result'", out3)
 	}
 }
 

@@ -165,8 +165,9 @@ type TaskTool struct {
 	parentMessages func() []provider.Message
 	// parentResultState is the parent agent's frozen tool-result replacement
 	// state, cloned for each spawned sub-agent so they inherit the parent's
-	// byte-identical message prefix.
-	parentResultState *ContentReplacementState
+	// byte-identical message prefix. The thunk is evaluated at Execute time so
+	// the caller can wire it before the state is constructed.
+	parentResultState func() *ContentReplacementState
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -228,11 +229,12 @@ func (t *TaskTool) WithParentMessages(fn func() []provider.Message) *TaskTool {
 	return t
 }
 
-// WithParentResultState supplies the parent agent's frozen tool-result replacement
-// state. It is cloned for each spawned sub-agent so they inherit the parent's
-// byte-identical message prefix.
-func (t *TaskTool) WithParentResultState(rs *ContentReplacementState) *TaskTool {
-	t.parentResultState = rs
+// WithParentResultState supplies a thunk that returns the parent agent's frozen
+// tool-result replacement state. The thunk is evaluated at Execute time so the
+// caller can wire it before the state is constructed. It is cloned for each
+// spawned sub-agent so they inherit the parent's byte-identical message prefix.
+func (t *TaskTool) WithParentResultState(fn func() *ContentReplacementState) *TaskTool {
+	t.parentResultState = fn
 	return t
 }
 
@@ -253,7 +255,7 @@ func (t *TaskTool) Schema() json.RawMessage {
   "run_in_background":{"type":"boolean","description":"Run the sub-agent asynchronously: returns a job id immediately and keeps working across turns. Collect its final answer with wait, and you'll be notified when it finishes. Use for long, independent sub-tasks you don't need to block on right now."},
   "model":{"type":"string","description":"Optional model override for the sub-agent (a configured provider/model name)."},
   "effort":{"type":"string","description":"Optional reasoning effort for the sub-agent (e.g. high, max)."},
-  "cache_from_parent":{"type":"boolean","description":"When true, the sub-agent inherits the parent's full conversation context for prompt cache sharing. Multiple sub-agents spawned with cache_from_parent at the same point share the server-side prompt cache: the first pays cache_create, the rest pay only cache_read. Use when the sub-agent needs the full context of what the parent was doing and you expect parallel or successive sub-agents. Not compatible with continue_from or fork_from. Default: false."},
+  "cache_from_parent":{"type":"boolean","description":"When true, the sub-agent inherits the parent's full conversation context for prompt cache sharing. Multiple sub-agents spawned with cache_from_parent at the same point share the server-side prompt cache: the first pays cache_create, the rest pay only cache_read. Automatically enabled when the parent context is available — you typically don't need to set this explicitly. Set to false to disable. Not compatible with continue_from or fork_from. Default: true (auto)."},
   "continue_from":{"type":"string","description":"Resume a prior subagent run in place: the subagent retains its context from the previous run; use in iterative loops (e.g. review -> fix -> review again) by passing only the 'sa_...' value from the prior result's 'Subagent reference: ...' line. Requires a compatible subagent identity, including tools, model, effort, and workspace."},
   "fork_from":{"type":"string","description":"Fork a prior subagent run: copies its transcript, leaves the source unchanged, and continues independently. Use only when you need an independent branch; for iterative continuation on the same thread, use continue_from. Pass the 'sa_...' value from the prior result's 'Subagent reference: ...' line. Requires a compatible subagent identity, including tools, model, effort, and workspace. Mutually exclusive with continue_from."}
 },
@@ -343,21 +345,27 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// multiple children from the same fork point share the server-side cache.
 	// For forked subagents we skip the transcript identity check (the system
 	// prompt lives in the inherited messages) and use an empty system prompt.
+	//
+	// When parent messages are wired (set via WithParentMessages), the subagent
+	// automatically uses cache_from_parent unless it is incompatible (recursive
+	// fork or no usable history) — in those cases it falls back to a normal
+	// session. The explicit flag overrides the auto-detection.
 	var forkedSession *Session
 	var forkGuard bool
-	if p.CacheFromParent {
+	if p.CacheFromParent || (t.parentMessages != nil && p.ContinueFrom == "" && p.ForkFrom == "") {
 		if t.parentMessages == nil {
-			return "", fmt.Errorf("cache_from_parent is not available in this context (parent messages not wired)")
+			if p.CacheFromParent {
+				return "", fmt.Errorf("cache_from_parent is not available in this context (parent messages not wired)")
+			}
+		} else {
+			parentMsgs := t.parentMessages()
+			if !IsForkChild(parentMsgs) && len(parentMsgs) > 1 {
+				forkedSession = BuildForkSession(parentMsgs)
+				if len(forkedSession.Messages) > 1 {
+					forkGuard = true
+				}
+			}
 		}
-		parentMsgs := t.parentMessages()
-		if IsForkChild(parentMsgs) {
-			return "", fmt.Errorf("recursive fork rejected: already inside a cache_from_parent subagent; run the work directly in this subagent instead")
-		}
-		forkedSession = BuildForkSession(parentMsgs)
-		if len(forkedSession.Messages) <= 1 {
-			return "", fmt.Errorf("cache_from_parent: parent has no usable conversation history to inherit")
-		}
-		forkGuard = true
 	}
 
 	run, err := t.prepareTranscriptRun(subReg, modelRef, effortRef, parentSessionID, parentID, p.ContinueFrom, p.ForkFrom)
@@ -591,7 +599,9 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 	mq, _ := memory.QueueFromContext(ctx)
 	var resultState *ContentReplacementState
 	if t.parentResultState != nil {
-		resultState = t.parentResultState.Clone()
+		if rs := t.parentResultState(); rs != nil {
+			resultState = rs.Clone()
+		}
 	}
 	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
 		MaxSteps:          maxSteps,

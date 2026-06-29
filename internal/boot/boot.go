@@ -740,8 +740,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			taskModel, taskEffort, resolveSubagentProvider, projectChecks).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
-			WithParentMessages(execSess.Snapshot).
-			WithParentResultState(resultState)
+			WithParentMessages(func() []provider.Message { return execSess.Snapshot() }).
+			WithParentResultState(func() *agent.ContentReplacementState { return resultState })
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
 		return "enabled task."
