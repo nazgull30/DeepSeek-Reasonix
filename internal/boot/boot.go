@@ -278,9 +278,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	skills := skillStore.List()
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
-	if !tokenEconomy {
-		sysPrompt = skill.ApplyIndex(sysPrompt, skills)
-	}
+	// Skills index is no longer folded into the system prompt. It is injected as
+	// a user message (an "attachment") immediately after the system prompt so the
+	// base system prompt stays stable across skill changes, preserving the
+	// server-side prompt cache for the system prefix. Token economy mode defers
+	// skills entirely behind connect_tool_source.
 
 	reg := tool.NewRegistry()
 	bashSpec := sandbox.Spec{Mode: cfg.BashMode(), WriteRoots: cfg.WriteRootsForRoot(root), Network: cfg.Sandbox.Network}
@@ -721,6 +723,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	taskModel := firstNonEmpty(cfg.Agent.SubagentModels["task"], cfg.Agent.SubagentModel)
 	taskEffort := firstNonEmpty(cfg.Agent.SubagentEfforts["task"], cfg.Agent.SubagentEffort)
+	// Forward declarations for addTaskTool closure, which is defined early but
+	// needs execSess and resultState that are constructed below.
+	var execSess *agent.Session
+	var resultState *agent.ContentReplacementState
 	taskToolAdded := false
 	addTaskTool := func() string {
 		if taskToolAdded {
@@ -733,7 +739,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			keepPolicy,
 			taskModel, taskEffort, resolveSubagentProvider, projectChecks).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
-			WithTranscriptIdentityResolver(subagentIdentity)
+			WithTranscriptIdentityResolver(subagentIdentity).
+			WithParentMessages(execSess.Snapshot).
+			WithParentResultState(resultState)
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
 		return "enabled task."
@@ -1065,7 +1073,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		})
 	}
 
-	execSess := agent.NewSession(sysPrompt)
+	execSess = agent.NewSession(sysPrompt)
+	// Inject the skills index as a user message ("attachment") instead of folding
+	// it into the system prompt. This keeps the system prefix stable across skill
+	// changes — only the attachment message changes, not the entire cache key.
+	// The model sees the same information; the cache key sees a smaller churn
+	// surface. Token economy mode defers skills behind connect_tool_source, so
+	// nothing is injected here.
+	if !tokenEconomy {
+		if block := skill.IndexBlock(skills); block != "" {
+			execSess.Messages = append(execSess.Messages, provider.Message{
+				Role:    provider.RoleUser,
+				Content: block,
+			})
+		}
+	}
+	resultState = agent.NewContentReplacementState(config.ArchiveDir())
 	executor := agent.New(execProv, reg, execSess, agent.Options{
 		MaxSteps:             maxSteps,
 		Temperature:          cfg.Agent.Temperature,
@@ -1083,6 +1106,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		KeepPolicy:           keepPolicy,
 		ReasoningLanguage:    cfg.ReasoningLanguage(),
 		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
+		ResultState:          resultState,
 	}, sink)
 
 	var runner agent.Runner = executor

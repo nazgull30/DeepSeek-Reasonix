@@ -87,6 +87,35 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 	}
 	high := int(float64(a.contextWindow) * a.compactRatio)
 	soft := int(float64(a.contextWindow) * a.softCompactRatio)
+
+	// Time-based micro-compaction: when the provider-side prompt cache has likely
+	// expired (idle beyond the TTL) and the prompt is large enough, compact
+	// proactively to reduce the cache-miss cost of the next user turn. This runs
+	// before the size-based threshold check so it triggers even when the prompt
+	// is below the 80% compact ratio.
+	if a.timeBasedCompactRatio > 0 && a.cacheIdleTTL > 0 && !a.lastProviderCall.IsZero() && !a.compactStuck {
+		idle := time.Since(a.lastProviderCall)
+		timeThreshold := int(float64(a.contextWindow) * a.timeBasedCompactRatio)
+		if idle > a.cacheIdleTTL && u.PromptTokens >= timeThreshold {
+			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
+				"prompt idle for %v (cache TTL %v); pre-compacting ~%d tokens to reduce cache-miss cost",
+				idle.Round(time.Second), a.cacheIdleTTL, u.PromptTokens)})
+			// Prune stale tool results first (free pass before compaction)
+			ratio := a.tokPerChar()
+			if st, err := a.PruneStaleToolResults(); err == nil && st.Results > 0 {
+				saved := int(float64(st.SavedChars) * ratio)
+				if u.PromptTokens-saved < timeThreshold {
+					return
+				}
+			}
+			if err := a.compact(ctx, "time-idle", "", false); err != nil {
+				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("time-based compaction skipped: %v", err)})
+				return
+			}
+			return
+		}
+	}
+
 	// Between the soft ratio and the trigger, report growing context once without
 	// rewriting the prefix — a compaction here would needlessly crater the cache.
 	if u.PromptTokens >= soft && u.PromptTokens < high && !a.softCompactNoticed {
