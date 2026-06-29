@@ -1224,7 +1224,7 @@ it when there's an obvious default; don't ask just to confirm. Approval-bypass
 modes do not answer ask questions or approve plans for the user. If no
 interactive user is available, the ask tool returns a model-assumption fallback;
 state the assumption you made before proceeding.
-For multi-step work, track progress with the todo_write tool: lay out the steps,
+Prefer targeted edits (edit_file or multi_edit) over write_file for changes — they send only the diff, not the full file, saving tokens. For multi-step work, track progress with the todo_write tool: lay out the steps,
 keep exactly one in_progress, and flip each to completed as you finish it — update
 the list as you go, not just at the end.
 In plan mode the harness blocks writer tools: do read-only research, then write a

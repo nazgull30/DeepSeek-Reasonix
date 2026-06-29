@@ -22,7 +22,7 @@ type editFile struct {
 func (editFile) Name() string { return "edit_file" }
 
 func (editFile) Description() string {
-	return "Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of rewriting the whole file."
+	return "Replace an exact string in a file with another. old_string must occur exactly once; add surrounding context to disambiguate. Use for targeted edits instead of write_file — only the changed portion is sent, not the full file, so it costs far fewer tokens."
 }
 
 func (editFile) Schema() json.RawMessage {
