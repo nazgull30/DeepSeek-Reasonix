@@ -561,14 +561,6 @@ func chatREPL(args []string) int {
 			ctrl.Registry().Add(t)
 		}
 
-		// When orchestrator child agents exist, remove writer tools from the main
-		// agent's registry so it must delegate code changes via agent_spawn instead
-		// of editing files directly. The child agents retain full writer access.
-		writerTools := []string{"write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol"}
-		for _, name := range writerTools {
-			ctrl.Registry().Remove(name)
-		}
-
 		// If a git child agent is configured, wrap the bash tool to intercept
 		// git commands and redirect them to the git agent.
 		if orc.HasAgent("git") {
