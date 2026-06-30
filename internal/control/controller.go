@@ -655,6 +655,9 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 		defer func() { c.hooks.Stop(ctx, lastAssistantText(c.History()), turn) }()
 	}
 	if err := c.runner.Run(ctx, input); err != nil {
+		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
+			c.stripTurnMessagesAfter(startMessages)
+		}
 		return err
 	}
 	c.mu.Lock()
@@ -691,6 +694,9 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 		c.mu.Unlock()
 	}()
 	if err := c.runner.Run(ctx, c.ComposeSynthetic(planApprovedMessage)); err != nil {
+		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
+			c.stripTurnMessagesAfter(execStart)
+		}
 		return err
 	}
 	if todoArgs != "" && !c.hasTodoUpdateSince(execStart) {
@@ -2610,6 +2616,23 @@ func (c *Controller) messageCount() int {
 		return 0
 	}
 	return len(c.executor.Session().Snapshot())
+}
+
+// stripTurnMessagesAfter truncates the executor's session to keep only messages
+// before the given index, discarding an incomplete turn (the user prompt plus
+// every assistant / tool message that followed). It is called when the user
+// explicitly cancels a turn so the next prompt starts clean — the model won't
+// see leftover in-progress todo items or partial tool calls and re-execute
+// interrupted work.
+func (c *Controller) stripTurnMessagesAfter(idx int) {
+	if c.executor == nil {
+		return
+	}
+	msgs := c.executor.Session().Snapshot()
+	if len(msgs) <= idx {
+		return
+	}
+	c.executor.Session().Replace(msgs[:idx])
 }
 
 func (c *Controller) snapshotActivityIfChanged(startMessages int) {
