@@ -4018,6 +4018,12 @@ type ContextPanelInfo struct {
 	ReasoningTokens  int                         `json:"reasoningTokens"`
 	CacheHitTokens   int                         `json:"cacheHitTokens"`
 	CacheMissTokens  int                         `json:"cacheMissTokens"`
+	// Session-cumulative token counts (from telemetry, atomic snapshot).
+	// Separate from the per-turn fields above so existing consumers (status bar
+	// turn tokens, donut chart) are unaffected.
+	SessionCacheHitTokens      int  `json:"sessionCacheHitTokens"`
+	SessionCacheMissTokens     int  `json:"sessionCacheMissTokens"`
+	SessionCompletionTokens    int  `json:"sessionCompletionTokens"`
 	RequestCount     int                         `json:"requestCount"`
 	ElapsedMs        int64                       `json:"elapsedMs"`
 	SessionCost      float64                     `json:"sessionCost"`
@@ -4082,6 +4088,9 @@ func (a *App) ContextPanel(tabID string) ContextPanelInfo {
 	info.SessionCurrency = usage.SessionCurrency
 	info.SessionCostUsd = usage.SessionCostUsd
 	info.Sources = usage.Sources
+	info.SessionCacheHitTokens = usage.CacheHitTokens
+	info.SessionCacheMissTokens = usage.CacheMissTokens
+	info.SessionCompletionTokens = usage.CompletionTokens
 
 	// Gather workspace changes for this tab's root.
 	if ctrl != nil && tab.WorkspaceRoot != "" {

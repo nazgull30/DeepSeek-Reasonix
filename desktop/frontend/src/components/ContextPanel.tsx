@@ -292,6 +292,10 @@ export function ContextPanel({
   const reasoningTokens = hasPanelUsage ? info?.reasoningTokens ?? 0 : usage?.reasoningTokens ?? 0;
   const cacheHitTokens = hasPanelUsage ? info?.cacheHitTokens ?? 0 : usage?.cacheHitTokens ?? 0;
   const cacheMissTokens = hasPanelUsage ? info?.cacheMissTokens ?? 0 : usage?.cacheMissTokens ?? 0;
+  // Session-cumulative values for the metrics cards (方案A: 纯前端改数据源)
+  const sessionCacheHit = info?.sessionCacheHitTokens ?? usage?.sessionCacheHitTokens ?? context?.cacheHitTokens ?? 0;
+  const sessionCacheMiss = info?.sessionCacheMissTokens ?? usage?.sessionCacheMissTokens ?? context?.cacheMissTokens ?? 0;
+  const sessionCompletion = info?.sessionCompletionTokens ?? 0;
   const cost = contextCostDisplay({ info, sessionCost, sessionCurrency, usage });
   const costSources = sourceRows(info, sessionCurrency);
   const showCostSources = costSources.some((row) => row.source !== "executor") || costSources.length > 1;
@@ -374,6 +378,9 @@ export function ContextPanel({
             <div className="context-panel__stats">
               <MetricCard label={t("context.time")} value={fmtDuration(elapsed, t)} />
               <MetricCard label={t("context.requests")} value={requestCount > 0 ? String(requestCount) : "-"} />
+              <MetricCard label={t("context.inputCacheHit")} value={fmtOptionalTokens(sessionCacheHit)} wide />
+              <MetricCard label={t("context.inputCacheMiss")} value={fmtOptionalTokens(sessionCacheMiss)} />
+              <MetricCard label={t("context.outputTokens")} value={fmtOptionalTokens(sessionCompletion)} />
               <MetricCard label={t("context.sessionTokens")} value={totalTokens > 0 ? totalTokens.toLocaleString() : "-"} wide />
             </div>
           </section>

@@ -172,6 +172,7 @@ type Messages struct {
 	CmdLanguage     string // /language
 	CmdSkill        string // /skills
 	CmdVerbose      string // /verbose
+	CmdReloadCmd    string // /reload-cmd
 	CmdDiffFold     string // /diff-fold
 	CmdSandbox      string // /sandbox
 	CmdEffort       string // /effort
@@ -182,6 +183,13 @@ type Messages struct {
 	CmdStats        string // /stats
 	CmdTodo         string // /todo
 	CmdQuit         string // /quit (also accepts /exit as hidden alias)
+	CmdCopy         string // /copy
+	CmdExport       string // /export
+	SlashCopyDone   string // "/copy" succeeded
+	SlashCopyEmpty  string // no assistant response to copy
+	SlashCopyListHeader string // header shown before the numbered list
+	SlashExportDoneFmt string // "/export" succeeded, %s = file path
+	SlashExportEmpty string // no messages to export
 	ArgSkillList    string // /skills list
 	ArgSkillShow    string // /skills show
 	ArgSkillNew     string // /skills new
