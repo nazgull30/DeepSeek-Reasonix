@@ -14,9 +14,11 @@ import (
 
 // maxToolResultPreviewChars is the maximum size of a tool result that is kept
 // verbatim in the session. Results larger than this are persisted to disk and
-// replaced with a preview stub. This is smaller than maxToolOutputBytes (32KB)
-// because multiple tool results per turn add up quickly; 8KB is roughly 2K
-// tokens, enough for a meaningful preview.
+// replaced with a preview stub, except for tools that return source code
+// (CodeGraph tools, read_file) which are always kept inline regardless of size.
+// This is smaller than maxToolOutputBytes (32KB) because multiple tool results
+// per turn add up quickly; 8KB is roughly 2K tokens, enough for a meaningful
+// preview.
 const maxToolResultPreviewChars = 8 * 1024
 
 // toolResultStorageDir is the subdirectory under the archive dir where
@@ -69,6 +71,13 @@ func (s *ContentReplacementState) MaybeReplace(callID, content, toolName string)
 			return content, false
 		}
 		return replacement, true
+	}
+
+	// Source-code tools always stay inline regardless of size so the model
+	// gets the full result without needing a second read from the archive.
+	if isSourceCodeTool(toolName) {
+		s.replaced[key] = content
+		return content, false
 	}
 
 	// Within budget — keep verbatim and record the decision.
@@ -145,6 +154,13 @@ func replacementKey(callID, content string) string {
 func sha256Hex(data []byte) string {
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:])
+}
+
+// isSourceCodeTool returns true for tools whose output is source code that
+// should never be archived — the model needs the full output inline to avoid
+// an extra round-trip reading the archived file.
+func isSourceCodeTool(name string) bool {
+	return strings.Contains(name, "mcp__codegraph__") || name == "read_file"
 }
 
 func sanitizeToolName(name string) string {
