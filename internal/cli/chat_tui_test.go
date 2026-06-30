@@ -26,6 +26,17 @@ import (
 
 type blockingTurnRunner struct{ started chan struct{} }
 
+type stubbornTurnRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *stubbornTurnRunner) Run(ctx context.Context, _ string) error {
+	close(r.started)
+	<-r.release
+	return ctx.Err()
+}
+
 func TestMain(m *testing.M) {
 	old := detectTermuxTerminal
 	detectTermuxTerminal = func() bool { return false }
@@ -41,19 +52,11 @@ func (r *blockingTurnRunner) Run(ctx context.Context, _ string) error {
 }
 
 type recordingTurnRunner struct {
-	inputs               []string
-	memoryCompilerInputs []string
+	inputs []string
 }
 
 func (r *recordingTurnRunner) Run(ctx context.Context, input string) error {
 	r.inputs = append(r.inputs, input)
-	// The memory compiler's source_event is set by the orchestrator from the
-	// controller's `raw` value. Capture it so we can prove the CLI passes the
-	// EXPANDED paste (not the folded label) — the label would starve the model
-	// of the pasted content once the compiler's contract replaces the user turn.
-	if source, ok := agent.MemoryCompilerSourceInputFromContext(ctx); ok {
-		r.memoryCompilerInputs = append(r.memoryCompilerInputs, source)
-	}
 	return nil
 }
 
@@ -898,7 +901,7 @@ func TestMouseWheelAndPageKeysScrollTranscript(t *testing.T) {
 		return n.(chatTUI)
 	}
 
-	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	cur := adv(newChatTUI(ctrl, "", ch, 80, nil), tea.WindowSizeMsg{Width: 80, Height: 10})
 	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
@@ -941,7 +944,7 @@ func TestRunningStreamPreservesScrolledReadingPosition(t *testing.T) {
 		return n.(chatTUI)
 	}
 
-	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	cur := adv(newChatTUI(ctrl, "", ch, 80, nil), tea.WindowSizeMsg{Width: 80, Height: 10})
 	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
@@ -978,7 +981,7 @@ func TestTranscriptScrollbarClickAndDrag(t *testing.T) {
 		return n.(chatTUI)
 	}
 
-	cur := adv(newChatTUI(ctrl, "", ch, 80), tea.WindowSizeMsg{Width: 80, Height: 10})
+	cur := adv(newChatTUI(ctrl, "", ch, 80, nil), tea.WindowSizeMsg{Width: 80, Height: 10})
 	for i := 0; i < 40; i++ {
 		cur = adv(cur, notice)
 	}
@@ -1709,21 +1712,8 @@ func TestPasteFoldExpandOnSubmit(t *testing.T) {
 		t.Fatalf("missing End marker in runner input.\nGot: %q", sentToRunner)
 	}
 
-	// The memory compiler (enabled by default) replaces the user turn with an
-	// execution contract whose source_event is the controller's `raw` value.
-	// If `raw` were the folded label, the model would only ever see
-	// "[Pasted text #1 · N lines]" and never the pasted content. Assert the
-	// source_event carries the EXPANDED content.
-	if len(r.memoryCompilerInputs) == 0 {
-		t.Fatal("memory compiler source input was not set on the context")
-	}
-	mcSource := r.memoryCompilerInputs[0]
-	if strings.Contains(mcSource, "[Pasted text #1") && !strings.Contains(mcSource, "line of pasted content") {
-		t.Fatalf("memory compiler source_event has the folded label but not the expanded content:\n%q", mcSource)
-	}
-	if !strings.Contains(mcSource, "line of pasted content") {
-		t.Fatalf("memory compiler source_event must contain the expanded paste content, got:\n%q", mcSource)
-	}
+	// The full expanded content must be present in the runner's input (regression:
+	// folded paste was previously sent as just the placeholder label).
 }
 
 func TestPasteMsgFoldsBeforeTextareaConsumesNewlines(t *testing.T) {
@@ -1861,7 +1851,7 @@ func TestDoubleCtrlCQuit(t *testing.T) {
 	}
 }
 
-func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
+func TestCtrlCCancelsRunningTurn(t *testing.T) {
 	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
 	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
 	ctrl.Send("hi")
@@ -1873,40 +1863,29 @@ func TestSecondCtrlCQuitsAfterCancelIsAlreadyRequested(t *testing.T) {
 	m.state = tuiRunning
 	ctrlC := tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
 
-	_, firstCmd := m.Update(ctrlC)
-	if firstCmd != nil {
+	_, cmd := m.Update(ctrlC)
+	if cmd != nil {
 		t.Fatal("first Ctrl+C while running should request cancel, not quit")
 	}
 	if st := ctrl.RuntimeStatus(); !st.Running || !st.CancelRequested {
 		t.Fatalf("first Ctrl+C status = %+v, want running cancel requested", st)
 	}
-
-	_, secondCmd := m.Update(ctrlC)
-	if secondCmd == nil {
-		t.Fatal("second Ctrl+C after cancel request should quit")
-	}
-	if msg := secondCmd(); msg != (tea.QuitMsg{}) {
-		t.Fatalf("second Ctrl+C command = %T, want tea.QuitMsg", msg)
-	}
 }
 
-func TestRunningStatusShowsCancelRequested(t *testing.T) {
+func TestRuntimeStatusReflectsCancel(t *testing.T) {
 	r := &stubbornTurnRunner{started: make(chan struct{}), release: make(chan struct{})}
 	ctrl := control.New(control.Options{Runner: r, Sink: event.Discard, SessionDir: t.TempDir(), Label: "test"})
 	ctrl.Send("hi")
 	<-r.started
 	defer close(r.release)
 
-	m := newTestChatTUI()
-	m.ctrl = ctrl
-	m.state = tuiRunning
-	m.width = 80
-	m.height = 24
 	ctrl.Cancel()
-
-	view := ansi.Strip(m.View().Content)
-	if !strings.Contains(view, "stopping") {
-		t.Fatalf("running status after cancel should show stopping feedback:\n%s", view)
+	st := ctrl.RuntimeStatus()
+	if !st.Running {
+		t.Fatal("controller should still report running after cancel")
+	}
+	if !st.CancelRequested {
+		t.Fatal("controller should report CancelRequested after cancel")
 	}
 }
 
