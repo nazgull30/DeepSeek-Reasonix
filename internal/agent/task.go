@@ -199,6 +199,7 @@ type TaskTool struct {
 	baseEffort          string
 	identityProfile     func(modelRef, effort string) (string, string)
 	maxSubagentDepth    int
+	parentResultState   func() *ContentReplacementState
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -254,6 +255,11 @@ func (t *TaskTool) WithTranscriptIdentityResolver(resolve func(modelRef, effort 
 
 func (t *TaskTool) WithMaxSubagentDepth(depth int) *TaskTool {
 	t.maxSubagentDepth = NormalizeMaxSubagentDepth(depth)
+	return t
+}
+
+func (t *TaskTool) WithParentResultState(fn func() *ContentReplacementState) *TaskTool {
+	t.parentResultState = fn
 	return t
 }
 
@@ -749,6 +755,12 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 
 func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int) (string, error) {
 	prompt = t.withWorkspaceContext(prompt)
+	var resultState *ContentReplacementState
+	if t.parentResultState != nil {
+		if rs := t.parentResultState(); rs != nil {
+			resultState = rs.Clone()
+		}
+	}
 	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
 		MaxSteps:            maxSteps,
 		Temperature:         t.temperature,
@@ -763,6 +775,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		CompactForceRatio:   t.compactForceRatio,
 		ArchiveDir:          t.archiveDir,
 		KeepPolicy:          t.keepPolicy,
+		ResultState:         resultState,
 		ResponseLanguage:    ResponseLanguageFromContext(ctx),
 		ReasoningLanguage:   ReasoningLanguageFromContext(ctx),
 		SubagentDepth:       childDepth,

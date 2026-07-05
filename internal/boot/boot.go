@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -415,6 +416,109 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	eagerSpecs := PluginSpecsForRootWithOptions(eagerEntries, root, pluginSpecOptions)
 	bgSpecs := PluginSpecsForRootWithOptions(bgEntries, root, pluginSpecOptions)
 
+	// CodeGraph is a built-in MCP server fetched on first use. When it resolves,
+	// inject it as one more stdio plugin pinned to the project root (it is
+	// cwd-aware); EnsureInit only creates .codegraph/ (fast, size-independent),
+	// serve's daemon then indexes in the background, so startup never blocks even
+	// on a large repo. When it is not yet installed, fetch it in the background
+	// (one-time, ~45MB) if auto_install is on — startup still never blocks, the
+	// tools come online next session — otherwise point the user at the explicit
+	// install command. A failed init or fetch is a notice, not fatal.
+	//
+	// CodeGraph is fixed to background startup. Legacy tier values are ignored so
+	// enabling it never blocks chat startup.
+	// Orchestrator child agents skip codegraph — the main controller handles it.
+	if cfg.Codegraph.Enabled && !opts.SkipCodegraph && !tokenEconomy {
+		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
+		switch {
+		case ok && !codegraph.IndexableRoot(root):
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+				Text: "codegraph: project root is a filesystem root — skipped to avoid indexing the whole volume"})
+		case ok:
+			if opts.SharedHost != nil && pluginHost != nil {
+				spec := plugin.ApplyKnownOverrides(plugin.Spec{
+					Name:              "codegraph",
+					StripRawPrefix:    "codegraph_",
+					Command:           bin,
+					Args:              []string{"serve", "--mcp", "--no-watch"},
+					Dir:               root,
+					ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
+					LowPriority:       true,
+				}, root)
+				tools, err := pluginHost.Add(ctx, spec)
+				if err != nil {
+					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+						Text: "codegraph: add to shared host failed: " + err.Error()})
+				} else {
+					for _, t := range tools {
+						reg.Add(t)
+					}
+				}
+				break
+			}
+			spec := plugin.ApplyKnownOverrides(plugin.Spec{
+				Name:              "codegraph",
+				StripRawPrefix:    "codegraph_",
+				Command:           bin,
+				Args:              []string{"serve", "--mcp", "--no-watch"},
+				Dir:               root,
+				ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
+				LowPriority:       true,
+			}, root)
+			warm := codegraph.Initialized(root)
+			if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
+				break
+			}
+			bgNotice := func() {
+				if !warm {
+					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+						Text: "codegraph: preparing code-intelligence tools in the background — tools will appear when ready"})
+				}
+			}
+			bgSpecs = append(bgSpecs, spec)
+			bgNotice()
+			go func(bin, root string) {
+				syncOnce := func() {
+					if out, err := codegraph.Sync(bin, root); err != nil {
+						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+							Text: "codegraph: sync failed: " + out})
+					}
+				}
+				syncOnce()
+				ticker := time.NewTicker(60 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						syncOnce()
+					}
+				}
+			}(bin, root)
+		case cfg.Codegraph.AutoInstall:
+			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
+			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
+			codegraphClient, err := netclient.NewHTTPClient(proxySpec, netclient.TransportOptions{})
+			if err != nil {
+				notify("codegraph: install skipped (" + err.Error() + ")")
+			} else {
+				go func() {
+					if _, err := codegraph.InstallWithClient(context.WithoutCancel(ctx), codegraphClient, nil); err != nil {
+						notify("codegraph: install failed (" + err.Error() + ") — using grep/glob; retries next session")
+					} else {
+						notify("codegraph: installed — symbol-graph tools available next session")
+					}
+				}()
+			}
+		default:
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+				Text: "codegraph: not installed — run `reasonix codegraph install` to enable symbol-graph tools"})
+		}
+	}
+
 	if !tokenEconomy {
 		eagerSpecs = append(eagerSpecs, extraSpecs...)
 	}
@@ -631,6 +735,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	taskToolAdded := false
 	readOnlyTaskToolAdded := false
 	var taskTool *agent.TaskTool
+	var resultState *agent.ContentReplacementState
 	newTaskTool := func() *agent.TaskTool {
 		return agent.NewTaskTool(execProv, entry.Price, reg, maxSteps,
 			entry.ContextWindow, cfg.Agent.RecentKeep, cfg.Agent.SoftCompactRatio, cfg.Agent.ToolResultSnipRatio, cfg.Agent.CompactRatio, cfg.Agent.CompactForceRatio,
@@ -639,7 +744,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			taskModel, taskEffort, resolveSubagentProvider).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
-			WithMaxSubagentDepth(maxSubagentDepth)
+			WithMaxSubagentDepth(maxSubagentDepth).
+			WithParentResultState(func() *agent.ContentReplacementState { return resultState })
 	}
 	addTaskTool := func() string {
 		if taskToolAdded {
@@ -1037,6 +1143,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if cfg.MemoryCompilerEnabled() {
 		memCompiler = memorycompiler.New(config.MemoryCompilerDir(root))
 	}
+	resultState = agent.NewContentReplacementState(config.ArchiveDir())
 	executor := agent.New(execProv, reg, execSess, agent.Options{
 		MaxSteps:                           maxSteps,
 		Temperature:                        cfg.Agent.Temperature,
@@ -1045,6 +1152,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Hooks:                              hookRunner,
 		Jobs:                               jm,
 		ProjectChecks:                      projectChecks,
+		ResultState:                        resultState,
 		ContextWindow:                      entry.ContextWindow,
 		SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
 		ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,

@@ -328,6 +328,11 @@ type Agent struct {
 	// verify against same-turn bash receipts after a write-backed completion.
 	projectChecks []instruction.VerifyCheck
 
+	// resultState tracks tool results that have been persisted to disk with a
+	// preview stub substituted in their place. A nil resultState means no
+	// replacement is performed.
+	resultState *ContentReplacementState
+
 	// memQueue, when non-nil, lets the remember/forget tools fold a turn-tail note
 	// about a just-made memory change into the next turn, so it applies this
 	// session without touching the cache-stable prefix. Set via SetMemoryQueue.
@@ -801,6 +806,11 @@ type Options struct {
 	// ProjectChecks are host-observable structured checks extracted during boot.
 	ProjectChecks []instruction.VerifyCheck
 
+	// ResultState is the frozen tool-result overflow state for this conversation.
+	// When set, tool results are persisted to disk (with a preview inlining) and
+	// source-code tools (codegraph, read_file) stay inline regardless of size.
+	ResultState *ContentReplacementState
+
 	// ReasoningLanguage controls visible reasoning language preference as transient
 	// user-turn context. Empty/auto injects nothing.
 	ReasoningLanguage string
@@ -902,6 +912,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		jobs:                     opts.Jobs,
 		evidence:                 evidence.NewLedger(),
 		projectChecks:            append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		resultState:              opts.ResultState,
 		contextWindow:            opts.ContextWindow,
 		softCompactRatio:         opts.SoftCompactRatio,
 		toolResultSnipRatio:      opts.ToolResultSnipRatio,
@@ -1898,6 +1909,13 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 	}
 	if !cancelled {
 		a.applyStormBreaker(calls, outcomes, results)
+	}
+	for i := range results {
+		if a.resultState != nil && outcomes[i].errMsg == "" && !outcomes[i].blocked {
+			if replaced, ok := a.resultState.MaybeReplace(calls[i].ID, results[i], calls[i].Name); ok {
+				results[i] = replaced
+			}
+		}
 	}
 	return results
 }
