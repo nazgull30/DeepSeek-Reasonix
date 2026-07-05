@@ -32,7 +32,7 @@ func NewParallelTasksTool(taskTool *TaskTool, reg *tool.Registry) *ParallelTasks
 func (p *ParallelTasksTool) Name() string { return "parallel_tasks" }
 
 func (p *ParallelTasksTool) Description() string {
-	return "Dispatch multiple read-only sub-agent tasks concurrently and collect their results. Each task runs in its own read-only sub-agent in parallel. Blocks until all complete."
+	return "Dispatch multiple read-only sub-agent tasks concurrently and collect their results. Blocks until all complete."
 }
 
 func (p *ParallelTasksTool) Schema() json.RawMessage {

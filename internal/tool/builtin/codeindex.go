@@ -27,7 +27,7 @@ type codeIndex struct {
 func (codeIndex) Name() string { return "code_index" }
 
 func (codeIndex) Description() string {
-	return "Lightweight built-in code symbol index. Prefer lsp_* for language semantics and installed code graph MCP tools for call graph, impact, and architecture relationships; use this as the local fallback for file outlines and symbol definition candidates, then verify with read_file or grep."
+	return "Lightweight built-in code symbol index. Lists symbols (outline) in a file/dir or searches by name. Prefer lsp_* or codegraph MCP for richer analysis."
 }
 
 func (codeIndex) Schema() json.RawMessage {

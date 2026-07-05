@@ -26,9 +26,7 @@ func NewRecallTool(store Store) tool.Tool { return recallTool{store: store} }
 func (recallTool) Name() string { return "memory" }
 
 func (recallTool) Description() string {
-	return "Search, list, and read saved project memories. " +
-		"Use this before saving a new memory to avoid duplicates, and when a saved memory from the index looks relevant but needs its full body. " +
-		"This tool is read-only; use remember to save or update a memory, and forget to delete one."
+	return "Search, list, and read saved project memories. Use before saving to avoid duplicates. Read-only; use remember to save and forget to delete."
 }
 
 func (recallTool) Schema() json.RawMessage {

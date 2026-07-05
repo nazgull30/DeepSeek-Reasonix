@@ -28,7 +28,7 @@ type todoItem struct {
 func (todoWrite) Name() string { return "todo_write" }
 
 func (todoWrite) Description() string {
-	return "Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Use it to plan multi-step work and show progress: keep exactly one item in_progress at a time, and flip an item to completed the moment it's done (don't batch completions). Skip it for trivial single-step tasks. The list is two-level: a `level` 0 item is a PHASE (a milestone) and the `level` 1 items after it are its concrete sub-steps; omit `level` (0) for a flat list. Each item has `content` (imperative, e.g. \"Add the parser\"), `status` (pending|in_progress|completed), `activeForm` (present-continuous shown while in progress, e.g. \"Adding the parser\"), and optional `level` (0 phase | 1 sub-step)."
+	return "Record and update a structured task list for the current work. Send the COMPLETE list every call — it replaces the previous one. Keep exactly one item in_progress; flip each to completed when done (don't batch). Two-level nesting: `level` 0 = phase/milestone, `level` 1 = sub-step. Each item has `content`, `status` (pending|in_progress|completed), optional `activeForm` and `level`."
 }
 
 func (todoWrite) Schema() json.RawMessage {

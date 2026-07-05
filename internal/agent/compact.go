@@ -127,6 +127,13 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 			return
 		}
 	}
+	// Try mechanical fold for regions worth folding but below the LLM
+	// economic threshold (200-399 tokens) — saves a summarizer call.
+	if !force && a.mechanicallyCompact() {
+		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
+			Text: "mechanically folded older messages (skipped LLM summarizer)"})
+		return
+	}
 	if err := a.compact(ctx, "auto", "", force); err != nil {
 		a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("compaction skipped: %v", err)})
 		return
@@ -152,6 +159,14 @@ func (a *Agent) maybeCompact(ctx context.Context, u *provider.Usage) {
 func foldEconomics(region []provider.Message) bool {
 	const minFoldTokens = 400
 	return estimateMessagesTokens(region) >= minFoldTokens
+}
+
+// mechanicalFoldWorth reports whether a region is worth folding mechanically
+// (a deterministic digest) but not large enough to justify an LLM summarizer call.
+// Regions at or above foldEconomics go to the LLM summarizer as before.
+func mechanicalFoldWorth(region []provider.Message) bool {
+	const minMechanicalFoldTokens = 200
+	return estimateMessagesTokens(region) >= minMechanicalFoldTokens
 }
 
 func estimateMessagesTokens(msgs []provider.Message) int {
@@ -288,6 +303,50 @@ func (a *Agent) compact(ctx context.Context, trigger, instructions string, force
 // no text of its own.
 func (a *Agent) emitCompactionAborted(trigger string) {
 	a.sink.Emit(event.Event{Kind: event.CompactionDone, Compaction: event.Compaction{Trigger: trigger}})
+}
+
+// mechanicallyCompact folds a region deterministically without calling the LLM
+// summarizer — same plan/partition logic as compact(), but replaces the foldable
+// messages with a mechanical digest instead of a model-written summary. It is the
+// fast path: no network call, no latency. Returns true when messages were replaced.
+// Used as a first pass before the LLM-based compact() to skip the summarizer when
+// the mechanical fold alone frees enough context.
+func (a *Agent) mechanicallyCompact() bool {
+	msgs := a.session.Messages
+	head, start, ok := a.planCompaction(msgs, minCompactMessages)
+	if !ok {
+		head, start, ok = a.planCompaction(msgs, 1)
+	}
+	if !ok {
+		return false
+	}
+	region := msgs[head:start]
+	kept, fold := a.partitionFold(region)
+	if len(fold) == 0 {
+		return false
+	}
+	// Use the lower mechanical-fold threshold: regions between 200-399
+	// tokens are folded mechanically (fast, no network); larger regions
+	// fall through to the LLM summarizer in compact().
+	if !mechanicalFoldWorth(fold) || foldEconomics(fold) {
+		return false
+	}
+
+	compacted := make([]provider.Message, 0, head+len(kept)+1+len(msgs)-start)
+	compacted = append(compacted, msgs[:head]...)
+	compacted = append(compacted, kept...)
+	summary := mechanicalFoldDigest(len(fold), "")
+	compacted = append(compacted, provider.Message{
+		Role: provider.RoleUser,
+		Content: summaryTagOpen + "\n" +
+			"Summary of earlier conversation (older messages were compacted to save context):\n" +
+			summary + "\n" +
+			summaryTagClose,
+	})
+	compacted = append(compacted, msgs[start:]...)
+	a.session.Replace(compacted)
+	a.session.IncrementRewrite()
+	return true
 }
 
 // SummarizeFrom replaces the messages from fromIdx onward with a single summary,

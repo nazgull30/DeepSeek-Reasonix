@@ -31,7 +31,7 @@ type bashOutput struct{}
 func (bashOutput) Name() string { return "bash_output" }
 
 func (bashOutput) Description() string {
-	return "Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns the output produced since the last bash_output call for that job, plus its status (running/done/failed/killed). Does not block."
+	return "Read new output from a background job started with bash(run_in_background=true) or task(run_in_background=true). Returns output since last call plus status. Does not block."
 }
 
 func (bashOutput) Schema() json.RawMessage {
@@ -131,7 +131,7 @@ type waitJob struct{}
 func (waitJob) Name() string { return "wait" }
 
 func (waitJob) Description() string {
-	return "Block until background jobs finish, then return each job's status and final output/answer. Use to collect the result of a task(run_in_background) or bash(run_in_background) before continuing. Omit job_ids to wait for every running job."
+	return "Block until background jobs finish, then return each job's status and final output/answer. Omit job_ids to wait for all running jobs."
 }
 
 func (waitJob) Schema() json.RawMessage {

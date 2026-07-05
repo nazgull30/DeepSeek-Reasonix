@@ -22,16 +22,7 @@ func NewRememberTool(store Store) tool.Tool { return rememberTool{store: store} 
 func (rememberTool) Name() string { return "remember" }
 
 func (rememberTool) Description() string {
-	return "Save a durable fact to project memory so it survives across sessions. " +
-		"Use for things worth remembering long-term: who the user is and their preferences (type \"user\"); " +
-		"guidance on how to work, including the why (type \"feedback\"); ongoing goals or constraints not " +
-		"derivable from the code (type \"project\"); or pointers to external resources (type \"reference\"). " +
-		"For feedback/project, structure the body with a \"**Why:**\" line and a \"**How to apply:**\" line so the fact is actionable later; " +
-		"link related memories inline with [[their-name]]. " +
-		"Do NOT save what the repo already records (code structure, git history) or facts that only matter to the current conversation; " +
-		"if asked to remember one of those, save instead the non-obvious point behind it. " +
-		"Before saving, check the loaded memory index for an entry that already covers this — reuse that name to update it rather than create a near-duplicate, and use `forget` to drop one that is now wrong. " +
-		"The saved index loads into context at the start of each session."
+	return "Save a durable fact to project memory so it survives across sessions. Use for: user preferences (\"user\"), guidance (\"feedback\"), goals/projects (\"project\"), references (\"reference\"). Include \"**Why:**\" and \"**How to apply:**\" for feedback/project. Check the memory index first to avoid duplicates."
 }
 
 func (rememberTool) Schema() json.RawMessage {

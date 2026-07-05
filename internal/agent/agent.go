@@ -33,6 +33,11 @@ import (
 // window before the next compaction runs.
 const maxToolOutputBytes = 32 * 1024
 
+// proactiveSnipBytes is the threshold at which a tool result is snipped before
+// it enters the session — same head/tail logic as stale tool-result maintenance,
+// but applied proactively so large outputs never pollute the conversation log.
+const proactiveSnipBytes = 4096
+
 const maxFinalReadinessBlocks = 3
 const maxEmptyFinalBlocks = 3
 const maxStreamRecoveries = 3
@@ -1064,6 +1069,20 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				UsageSource:      a.usageSource,
 				CacheDiagnostics: &cacheDiagnostics,
 				SessionHit:       int(a.sessCacheHit.Load()), SessionMiss: int(a.sessCacheMiss.Load())})
+			// Accumulate into cumulative session usage — the agent is the only
+			// place that sees every per-turn Usage, so this is where frontends
+			// (CLI, serve, desktop) get their cumulative totals without each
+			// needing its own accumulator.
+			a.sessionUsage.TotalTokens += usage.TotalTokens
+			a.sessionUsage.PromptTokens += usage.PromptTokens
+			a.sessionUsage.CacheHitTokens += usage.CacheHitTokens
+			a.sessionUsage.CacheMissTokens += usage.CacheMissTokens
+			a.sessionUsage.CompletionTokens += usage.CompletionTokens
+			a.sessionUsage.ReasoningTokens += usage.ReasoningTokens
+			if a.pricing != nil {
+				a.sessionUsage.Cost += a.pricing.Cost(usage)
+				a.sessionUsage.Currency = a.pricing.Currency
+			}
 		}
 		if msg, ok := finishReasonMessage(usage); ok {
 			a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
@@ -1138,6 +1157,10 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		}
 
 		results := a.executeBatch(ctx, calls)
+		// Proactive snip: apply the same head/tail tool-result maintenance at
+		// insertion time so large outputs are never stored verbatim in the
+		// conversation log. Only fires when a context window is configured.
+		results = a.proactiveSnipResults(calls, results)
 		for i, call := range calls {
 			a.session.Add(provider.Message{
 				Role:       provider.RoleTool,
@@ -1918,6 +1941,34 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) []s
 		}
 	}
 	return results
+}
+
+// proactiveSnipResults applies head/tail snipping to tool results before they
+// enter the session. Only fires when a context window is configured and the
+// result exceeds proactiveSnipBytes. Archived originals share one archive path
+// per batch. The snip strategy comes from the tool's SnipHinter or the default.
+func (a *Agent) proactiveSnipResults(calls []provider.ToolCall, results []string) []string {
+	if a.contextWindow <= 0 || len(results) == 0 {
+		return results
+	}
+	var archive string
+	out := make([]string, len(results))
+	copy(out, results)
+	for i, call := range calls {
+		if len(out[i]) < proactiveSnipBytes {
+			continue
+		}
+		m := provider.Message{Name: call.Name, Content: out[i]}
+		if archive == "" && a.archiveDir != "" {
+			path, err := archiveMessages(a.archiveDir, []provider.Message{m})
+			if err == nil {
+				archive = path
+			}
+		}
+		strategy := a.snipStrategyFor(call.Name)
+		out[i] = snipToolResult(m, archive, strategy)
+	}
+	return out
 }
 
 func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {

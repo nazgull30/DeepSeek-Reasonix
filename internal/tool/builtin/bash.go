@@ -81,19 +81,10 @@ func (b bash) Description() string {
 	sh := b.resolved()
 	if sh.Kind == sandbox.ShellPowerShell {
 		shellName := "Windows PowerShell"
-		chaining := "';' runs both regardless; 'if ($?) { ... }' is conditional. '&&' and '||' are NOT parsed."
 		if sh.SupportsChaining() {
 			shellName = "PowerShell 7 (pwsh)"
-			chaining = "'&&' and '||' are parsed for conditional chaining; ';' runs both regardless."
 		}
-		return fmt.Sprintf("Execute a command in the shell and return combined stdout/stderr. "+
-			"NOTE: bash is not available on this host — commands run under %s, so write PowerShell, not bash:\n"+
-			"  - chaining: %s\n"+
-			"  - redirect/vars: $null not /dev/null; $env:VAR not $VAR; '2>$null' drops stderr.\n"+
-			"  - file ops: Get-ChildItem (ls), Get-Content (cat), Remove-Item -Recurse -Force (rm -rf), Copy-Item (cp), Select-String (grep).\n"+
-			"  - no head/tail/which/touch: use Select-Object -First/-Last N, (Get-Command x).Source, New-Item.\n"+
-			"  - multi-line text to a native exe (e.g. git commit -m): use a single-quoted here-string @'...'@ (closing '@ at column 0)."+
-			bashToolSteer, shellName, chaining)
+		return fmt.Sprintf("Execute a command in the shell and return combined stdout/stderr. NOTE: running under %s — use PowerShell syntax.%s", shellName, bashToolSteer)
 	}
 	return "Execute a command in the shell and return combined stdout/stderr." + bashToolSteer
 }
@@ -101,7 +92,7 @@ func (b bash) Description() string {
 // bashToolSteer points the model at the cross-platform built-in tools instead of
 // shell utilities, so it doesn't reach for grep/cat/ls/find (absent or different
 // on native Windows) when a native tool already does the job everywhere.
-const bashToolSteer = " Use for builds, tests, git, package managers, etc. To search/read/list/edit/move files, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file) over shell grep/cat/ls/find/sed/mv/Move-Item — they behave identically on every OS. For symbol search or architecture questions, prefer LSP/read tools and targeted grep before shell commands."
+const bashToolSteer = " Use for builds, tests, git, package managers, etc. For search/read/list/edit/move, prefer the dedicated tools (grep, read_file, ls, glob, edit_file, move_file). For symbol/arch questions, prefer LSP or codegraph."
 
 // resolved returns the bound shell, resolving lazily for the zero-value instance
 // (e.g. a registry that never went through ConfineBash).

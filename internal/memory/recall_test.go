@@ -45,7 +45,7 @@ func TestRecallToolSearchesSavedMemories(t *testing.T) {
 
 func TestRecallToolSchemaIsCacheStable(t *testing.T) {
 	tl := NewRecallTool(Store{Dir: t.TempDir()})
-	if got, want := tl.Description(), "Search, list, and read saved project memories. Use this before saving a new memory to avoid duplicates, and when a saved memory from the index looks relevant but needs its full body. This tool is read-only; use remember to save or update a memory, and forget to delete one."; got != want {
+	if got, want := tl.Description(), "Search, list, and read saved project memories. Use before saving to avoid duplicates. Read-only; use remember to save and forget to delete."; got != want {
 		t.Fatalf("memory description changed; this is provider-visible and affects prompt-cache shape.\nwant: %q\n got: %q", want, got)
 	}
 	const wantSchema = `{

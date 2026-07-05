@@ -37,7 +37,7 @@ const (
 func (webFetch) Name() string { return "web_fetch" }
 
 func (webFetch) Description() string {
-	return "Fetch a URL over HTTPS/HTTP and return its text content. HTML pages are reduced to readable text (scripts, styles, tags stripped, whitespace collapsed); JSON / plain text / markdown bodies come back verbatim. Use to read documentation pages, API responses, or source files hosted somewhere the local filesystem can't reach."
+	return "Fetch a URL over HTTPS/HTTP and return its text content. HTML pages are reduced to readable text (tags stripped); JSON/plain text/markdown come back verbatim. Use to read docs, APIs, or remote source files."
 }
 
 func (webFetch) Schema() json.RawMessage {

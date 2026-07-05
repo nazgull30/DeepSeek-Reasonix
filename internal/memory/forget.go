@@ -19,9 +19,7 @@ func NewForgetTool(store Store) tool.Tool { return forgetTool{store: store} }
 func (forgetTool) Name() string { return "forget" }
 
 func (forgetTool) Description() string {
-	return "Delete a saved memory by name when it is wrong, stale, or superseded, so it stops loading into future sessions. " +
-		"Use the slug from the memory index — the \"<name>\" in \"[label](<name>.md)\". " +
-		"Prefer updating a memory with `remember` (reuse its name) over forget-then-recreate; reach for forget only when the fact should no longer exist at all."
+	return "Delete a saved memory by name when wrong, stale, or superseded. Use the slug name from the memory index. Prefer `remember` with the same name over forget-then-recreate."
 }
 
 func (forgetTool) Schema() json.RawMessage {

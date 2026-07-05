@@ -668,14 +668,14 @@ func chatREPL(args []string) int {
 			agentSink.SetVerbose(entry.Verbose)
 			denylist := orchestrator.OrchestratorToolNames()
 			childCtrl, cerr := boot.Build(ctx, boot.Options{
-				Model:                 modelName,
-				AgentName:             entry.Name,
-				MaxSteps:              *maxSteps,
-				Sink:                  agentSink,
-				SystemPrompt:          entryPrompt,
-				ToolDenylist:          denylist,
-				SkipCodegraph:         true,
-				InheritProjectMemory:  entry.InheritProjectMemory,
+				Model:                modelName,
+				AgentName:            entry.Name,
+				MaxSteps:             *maxSteps,
+				Sink:                 agentSink,
+				SystemPrompt:         entryPrompt,
+				ToolDenylist:         denylist,
+				SkipCodegraph:        true,
+				InheritProjectMemory: entry.InheritProjectMemory,
 			})
 			if cerr != nil {
 				fmt.Fprintln(os.Stderr, "orchestrator: failed to start agent", entry.Name+":", cerr)

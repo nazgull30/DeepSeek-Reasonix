@@ -10,10 +10,10 @@ import (
 
 func TestParseHHMM(t *testing.T) {
 	tests := []struct {
-		input    string
-		hour     int
-		minute   int
-		wantErr  bool
+		input   string
+		hour    int
+		minute  int
+		wantErr bool
 	}{
 		{"14:30", 14, 30, false},
 		{"00:00", 0, 0, false},

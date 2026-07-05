@@ -74,7 +74,7 @@ func TestBreakdownWithCheckpoints(t *testing.T) {
 
 func TestBreakdownSessionUsage(t *testing.T) {
 	a := &Agent{
-		session:     newSession(),
+		session:       newSession(),
 		contextWindow: 128000,
 	}
 	for _, m := range fakeMsgs() {
@@ -394,7 +394,7 @@ func TestPlural(t *testing.T) {
 
 func TestBreakdownWindowFallback(t *testing.T) {
 	a := &Agent{
-		session:     newSession(),
+		session:       newSession(),
 		contextWindow: 100000,
 	}
 	for _, m := range fakeMsgs() {

@@ -14,9 +14,11 @@ type agentSpawnTool struct {
 	orc *Orchestrator
 }
 
-func (t *agentSpawnTool) Name() string        { return "agent_spawn" }
-func (t *agentSpawnTool) Description() string  { return "Delegate a complete task to a named managed agent. The agent runs independently with its own model, tools, and context. When you receive the result, the agent has finished the work — integrate the outcome and move on. Do not repeat the delegated work." }
-func (t *agentSpawnTool) ReadOnly() bool       { return false }
+func (t *agentSpawnTool) Name() string { return "agent_spawn" }
+func (t *agentSpawnTool) Description() string {
+	return "Delegate a complete task to a named managed agent. The agent runs independently with its own model, tools, and context. When you receive the result, the agent has finished the work — integrate the outcome and move on. Do not repeat the delegated work."
+}
+func (t *agentSpawnTool) ReadOnly() bool { return false }
 
 func (t *agentSpawnTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -66,9 +68,11 @@ type agentSendTool struct {
 	orc *Orchestrator
 }
 
-func (t *agentSendTool) Name() string        { return "agent_send" }
-func (t *agentSendTool) Description() string  { return "Send a message to a managed agent and wait for its response. Unlike agent_spawn, this continues the agent's existing conversation context. When you receive the result, the agent has finished responding — integrate the outcome and move on. Do not repeat the delegated work." }
-func (t *agentSendTool) ReadOnly() bool       { return false }
+func (t *agentSendTool) Name() string { return "agent_send" }
+func (t *agentSendTool) Description() string {
+	return "Send a message to a managed agent and wait for its response. Unlike agent_spawn, this continues the agent's existing conversation context. When you receive the result, the agent has finished responding — integrate the outcome and move on. Do not repeat the delegated work."
+}
+func (t *agentSendTool) ReadOnly() bool { return false }
 
 func (t *agentSendTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -114,9 +118,11 @@ type agentStatusTool struct {
 	orc *Orchestrator
 }
 
-func (t *agentStatusTool) Name() string        { return "agent_status" }
-func (t *agentStatusTool) Description() string  { return "Get the status of a managed agent (idle/running, turn count, last task)." }
-func (t *agentStatusTool) ReadOnly() bool       { return true }
+func (t *agentStatusTool) Name() string { return "agent_status" }
+func (t *agentStatusTool) Description() string {
+	return "Get the status of a managed agent (idle/running, turn count, last task)."
+}
+func (t *agentStatusTool) ReadOnly() bool { return true }
 
 func (t *agentStatusTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -155,9 +161,11 @@ type agentStatsTool struct {
 	orc *Orchestrator
 }
 
-func (t *agentStatsTool) Name() string        { return "agent_stats" }
-func (t *agentStatsTool) Description() string  { return "Get detailed token/cost statistics for a managed agent." }
-func (t *agentStatsTool) ReadOnly() bool       { return true }
+func (t *agentStatsTool) Name() string { return "agent_stats" }
+func (t *agentStatsTool) Description() string {
+	return "Get detailed token/cost statistics for a managed agent."
+}
+func (t *agentStatsTool) ReadOnly() bool { return true }
 
 func (t *agentStatsTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -254,5 +262,3 @@ func isGitCommand(cmd string) bool {
 	}
 	return true
 }
-
-
