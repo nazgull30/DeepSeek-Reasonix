@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +93,19 @@ func newStdioTransport(ctx context.Context, s Spec) (*stdioTransport, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
+	}
+	// Increase pipe buffers on Linux so a large JSON-RPC response line
+	// (e.g. git_diff_unstaged with a sizeable diff) doesn't fill the
+	// default 64 KB kernel buffer and deadlock the transport (#4879).
+	if f, ok := stdout.(*os.File); ok {
+		if perr := proc.SetPipeBufferSize(f, proc.DefaultPipeBufferSize); perr != nil {
+			slog.Warn("plugin: set stdout pipe buffer", "server", s.Name, "error", perr)
+		}
+	}
+	if f, ok := stdin.(*os.File); ok {
+		if perr := proc.SetPipeBufferSize(f, proc.DefaultPipeBufferSize); perr != nil {
+			slog.Warn("plugin: set stdin pipe buffer", "server", s.Name, "error", perr)
+		}
 	}
 	job, err := proc.StartTracked(cmd)
 	if err != nil {
