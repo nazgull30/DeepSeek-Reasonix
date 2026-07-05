@@ -124,10 +124,7 @@ type Options struct {
 	// controller. Used for orchestrator child agents to avoid N concurrent
 	// downloads/installs when the main controller already handles it.
 	SkipCodegraph bool
-	// SkipPlugins disables all external MCP plugins (not just codegraph) for
-	// this controller. Used for orchestrator child agents so they don't inherit
-	// every MCP server configured for the main agent. Codegraph is also skipped.
-	SkipPlugins bool
+
 	// TokenMode selects how much optional context/tool surface this session exposes
 	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
 	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
@@ -371,14 +368,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	var pluginSpecOptions PluginSpecOptions
 	var trustedMCPServers map[string]bool
 	var demoteMessages []string
-	if !opts.SkipPlugins {
-		pluginSpecOptions := PluginSpecOptions{
-			DefaultCallTimeout:   time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
-			PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
-		}
-		autoStartEntries := cfg.AutoStartPlugins()
-		eagerEntries, bgEntries = partitionByTier(autoStartEntries)
-		extraSpecs = applyDefaultMCPCallTimeout(
+	pluginSpecOptions = PluginSpecOptions{
+		DefaultCallTimeout:   time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
+		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
+	}
+	autoStartEntries := filterPluginsForAgent(cfg.AutoStartPlugins(), opts.AgentName)
+	eagerEntries, bgEntries = partitionByTier(autoStartEntries)
+	extraSpecs = applyDefaultMCPCallTimeout(
 		applyPlanModeAllowedMCPToolTrust(applyKnownPluginOverrides(opts.ExtraPlugins, root), cfg.Agent.PlanModeAllowedTools),
 		pluginSpecOptions.DefaultCallTimeout,
 	)
@@ -403,7 +399,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// samples repeatedly hit the blocking startup budget) drops to background
 	// for this session. The user keeps eager intent, just doesn't pay for it
 	// on a server that's been misbehaving. A notice surfaces the demotion.
-	var demoteMessages []string
 	budget := plugin.DefaultStartupBudget()
 	kept := eagerEntries[:0]
 	for _, e := range eagerEntries {
@@ -523,7 +518,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	registerBackground(bgSpecs)
-	}
 
 	for _, msg := range demoteMessages {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg})
@@ -1739,6 +1733,30 @@ func trustedRawReadOnlyToolNames(names []string) map[string]bool {
 		return nil
 	}
 	return out
+}
+
+// filterPluginsForAgent returns only the plugins that should be loaded for the
+// given agent name. When agentName is empty (main agent), all plugins are
+// returned (backward compatible). When set, only plugins whose Agents list is
+// empty (available to all) or contains the agent name are included.
+func filterPluginsForAgent(entries []config.PluginEntry, agentName string) []config.PluginEntry {
+	if agentName == "" {
+		return entries
+	}
+	filtered := make([]config.PluginEntry, 0, len(entries))
+	for _, e := range entries {
+		if len(e.Agents) == 0 {
+			filtered = append(filtered, e)
+			continue
+		}
+		for _, a := range e.Agents {
+			if strings.EqualFold(a, agentName) {
+				filtered = append(filtered, e)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 func planModeTrustedMCPServers(specs map[string]plugin.Spec) map[string]bool {

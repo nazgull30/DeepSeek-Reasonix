@@ -1467,7 +1467,8 @@ type PluginEntry struct {
 	//                  swap happens once the spawn finishes.
 	// Empty defaults to "background" so enabled MCPs connect automatically
 	// without blocking chat. Unknown non-empty values fall back to "background".
-	Tier         string `toml:"tier"`
+	Tier         string   `toml:"tier"`
+	Agents       []string `toml:"agents,omitempty"`
 	expansionEnv map[string]string
 }
 
