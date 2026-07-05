@@ -1359,8 +1359,8 @@ func TestWithBuiltinFamiliesForLanguageUsesDeepSeekPricing(t *testing.T) {
 	if flash == nil {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
-		t.Fatalf("flash price = %+v, want CNY preset", flash.Price)
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want USD preset", flash.Price)
 	}
 }
 

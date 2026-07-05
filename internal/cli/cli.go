@@ -675,6 +675,7 @@ func chatREPL(args []string) int {
 				SystemPrompt:          entryPrompt,
 				ToolDenylist:          denylist,
 				SkipCodegraph:         true,
+				SkipPlugins:           true,
 				InheritProjectMemory:  entry.InheritProjectMemory,
 			})
 			if cerr != nil {

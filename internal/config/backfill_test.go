@@ -400,15 +400,15 @@ func TestApplyDeepSeekOfficialDefaultPricingUsesConfiguredLanguage(t *testing.T)
 	if !ok {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
-		t.Fatalf("flash price = %+v, want CNY preset", flash.Price)
+	if flash.Price == nil || flash.Price.Output != 0.28 || flash.Price.Currency != "$" {
+		t.Fatalf("flash price = %+v, want USD preset", flash.Price)
 	}
 	pro, ok := c.Provider("deepseek-pro")
 	if !ok {
 		t.Fatal("deepseek-pro provider missing")
 	}
-	if pro.Price == nil || pro.Price.Output != 6 || pro.Price.Currency != "¥" {
-		t.Fatalf("pro price = %+v, want CNY preset", pro.Price)
+	if pro.Price == nil || pro.Price.Output != 0.87 || pro.Price.Currency != "$" {
+		t.Fatalf("pro price = %+v, want USD preset", pro.Price)
 	}
 }
 

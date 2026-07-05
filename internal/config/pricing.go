@@ -18,6 +18,13 @@ func deepSeekV4ProPrice() *provider.Pricing {
 	return &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}
 }
 
+func deepSeekV4PricesJPY() map[string]*provider.Pricing {
+	return map[string]*provider.Pricing{
+		"deepseek-v4-flash": deepSeekV4FlashPrice(),
+		"deepseek-v4-pro":   deepSeekV4ProPrice(),
+	}
+}
+
 func deepSeekV4Prices() map[string]*provider.Pricing {
 	return deepSeekV4PricesUSD()
 }
@@ -205,7 +212,7 @@ func isKnownDeepSeekOfficialPricing(model string, price *provider.Pricing) bool 
 	if model == "" || price == nil {
 		return false
 	}
-	for _, prices := range []map[string]*provider.Pricing{deepSeekV4Prices(), deepSeekV4PricesUSD()} {
+	for _, prices := range []map[string]*provider.Pricing{deepSeekV4PricesJPY(), deepSeekV4PricesUSD()} {
 		if samePricing(price, prices[model]) {
 			return true
 		}

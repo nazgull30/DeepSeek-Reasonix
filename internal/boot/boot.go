@@ -124,6 +124,10 @@ type Options struct {
 	// controller. Used for orchestrator child agents to avoid N concurrent
 	// downloads/installs when the main controller already handles it.
 	SkipCodegraph bool
+	// SkipPlugins disables all external MCP plugins (not just codegraph) for
+	// this controller. Used for orchestrator child agents so they don't inherit
+	// every MCP server configured for the main agent. Codegraph is also skipped.
+	SkipPlugins bool
 	// TokenMode selects how much optional context/tool surface this session exposes
 	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
 	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
@@ -360,18 +364,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	// Partition configured plugins by tier so eager can block when explicitly
 	// requested while every other enabled MCP warms up in the background.
-	pluginSpecOptions := PluginSpecOptions{
-		DefaultCallTimeout:   time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
-		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
-	}
-	autoStartEntries := cfg.AutoStartPlugins()
-	eagerEntries, bgEntries := partitionByTier(autoStartEntries)
-	extraSpecs := applyDefaultMCPCallTimeout(
+	var eagerEntries, bgEntries []config.PluginEntry
+	var extraSpecs []plugin.Spec
+	var onDemandMCPSpecs map[string]plugin.Spec
+	var onDemandMCPNames []string
+	var pluginSpecOptions PluginSpecOptions
+	var trustedMCPServers map[string]bool
+	var demoteMessages []string
+	if !opts.SkipPlugins {
+		pluginSpecOptions := PluginSpecOptions{
+			DefaultCallTimeout:   time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
+			PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
+		}
+		autoStartEntries := cfg.AutoStartPlugins()
+		eagerEntries, bgEntries = partitionByTier(autoStartEntries)
+		extraSpecs = applyDefaultMCPCallTimeout(
 		applyPlanModeAllowedMCPToolTrust(applyKnownPluginOverrides(opts.ExtraPlugins, root), cfg.Agent.PlanModeAllowedTools),
 		pluginSpecOptions.DefaultCallTimeout,
 	)
-	onDemandMCPSpecs := map[string]plugin.Spec{}
-	onDemandMCPNames := []string{}
+	onDemandMCPSpecs = map[string]plugin.Spec{}
+	onDemandMCPNames = []string{}
 	if tokenEconomy {
 		for _, spec := range append(PluginSpecsForRootWithOptions(autoStartEntries, root, pluginSpecOptions), extraSpecs...) {
 			name := strings.TrimSpace(spec.Name)
@@ -385,7 +397,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 		eagerEntries, bgEntries = nil, nil
 	}
-	trustedMCPServers := planModeTrustedMCPServers(onDemandMCPSpecs)
+	trustedMCPServers = planModeTrustedMCPServers(onDemandMCPSpecs)
 
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to background
@@ -511,6 +523,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 	}
 	registerBackground(bgSpecs)
+	}
 
 	for _, msg := range demoteMessages {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg})
