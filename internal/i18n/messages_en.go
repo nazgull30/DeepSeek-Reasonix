@@ -189,6 +189,8 @@ var English = Messages{
 	CmdMigrate:          "retry legacy data migration",
 	CmdGoal:             "set or clear the active goal",
 	CmdRemember:         "save a memory note",
+	CmdStats:            "show session usage stats",
+	CmdContext:          "show context window breakdown",
 	CmdForget:           "archive a saved memory",
 	CmdMcp:              "MCP servers",
 	CmdHooks:            "manage hooks",

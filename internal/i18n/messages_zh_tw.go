@@ -177,6 +177,8 @@ var ChineseTraditional = Messages{
 	CmdMemory:           "檢視記憶檔案",
 	CmdMigrate:          "重試舊資料遷移",
 	CmdRemember:         "儲存一條記憶",
+	CmdStats:            "顯示會話使用統計",
+	CmdContext:          "顯示上下文窗口拆分",
 	CmdForget:           "刪除一條已存記憶",
 	CmdMcp:              "MCP 伺服器",
 	CmdHooks:            "管理 hooks",

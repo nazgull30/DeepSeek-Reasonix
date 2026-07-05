@@ -178,6 +178,8 @@ type Messages struct {
 	CmdMigrate          string // /migrate
 	CmdGoal             string // /goal
 	CmdRemember         string // /remember
+	CmdStats            string // /stats
+	CmdContext           string // /context
 	CmdForget           string // /forget
 	CmdMcp              string // /mcp
 	CmdHooks            string // /hooks

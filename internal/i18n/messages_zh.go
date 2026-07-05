@@ -190,6 +190,8 @@ var Chinese = Messages{
 	CmdMigrate:          "重试旧数据迁移",
 	CmdGoal:             "设置或清除当前目标",
 	CmdRemember:         "保存一条记忆",
+	CmdStats:            "显示会话使用统计",
+	CmdContext:          "显示上下文窗口拆分",
 	CmdForget:           "归档一条已存记忆",
 	CmdMcp:              "MCP 服务器",
 	CmdHooks:            "管理 hooks",

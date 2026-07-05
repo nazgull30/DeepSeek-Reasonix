@@ -1556,6 +1556,12 @@ func (c *Controller) SetPlanMode(v bool) {
 }
 
 // SetAutoPlan updates the interactive auto-plan gate for subsequent turns.
+func (c *Controller) SetPlanModeAllowedTools(tools []string) {
+	if c.executor != nil {
+		c.executor.SetPlanModeAllowedTools(tools)
+	}
+}
+
 func (c *Controller) SetAutoPlan(mode string) {
 	c.mu.Lock()
 	c.autoPlan = normalizeAutoPlan(mode)
@@ -3030,6 +3036,21 @@ func (c *Controller) ContextSnapshot() (int, int) {
 	return u.PromptTokens + u.CompletionTokens, c.executor.ContextWindow()
 }
 
+// ContextBreakdown returns a detailed breakdown of the session's context usage:
+// system prompt tokens, tool schema costs, per-turn conversation estimates, and
+// cumulative usage from the API. Returns nil when the executor isn't ready.
+func (c *Controller) ContextBreakdown() *agent.ContextBreakdown {
+	if c.executor == nil {
+		return nil
+	}
+	reg := c.mcp.registry()
+	if reg == nil {
+		return nil
+	}
+	schemas := reg.Schemas()
+	return c.executor.Breakdown(schemas, c.checkpoints.store)
+}
+
 // CompactRatio returns the auto-compaction threshold as a fraction of the window
 // (0 when the executor is unset). The status line shows headroom against it.
 func (c *Controller) CompactRatio() float64 {
@@ -3056,6 +3077,14 @@ func (c *Controller) SessionCache() (hit, miss int) {
 		return 0, 0
 	}
 	return c.executor.SessionCache()
+}
+
+// SessionUsage returns the cumulative token/cost totals for this session.
+func (c *Controller) SessionUsage() agent.SessionUsageMeta {
+	if c.executor == nil {
+		return agent.SessionUsageMeta{}
+	}
+	return c.executor.SessionUsage()
 }
 
 // Todos returns a copy of the canonical task list (the latest todo_write state
@@ -3125,6 +3154,8 @@ func (c *Controller) Balance(ctx context.Context) (*billing.Balance, error) {
 // Host returns the running MCP host (nil when no plugins), for frontends that
 // list servers / resolve MCP prompts.
 func (c *Controller) Host() *plugin.Host { return c.mcp.hostRef() }
+
+func (c *Controller) Registry() *tool.Registry { return c.mcp.registry() }
 
 // Commands returns the loaded custom slash commands.
 func (c *Controller) Commands() []command.Command {

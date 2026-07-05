@@ -13,6 +13,18 @@ import (
 	"reasonix/internal/store"
 )
 
+// SessionUsageMeta captures cumulative token and cost data for the session.
+type SessionUsageMeta struct {
+	TotalTokens      int     `json:"total_tokens"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CacheHitTokens   int     `json:"cache_hit_tokens"`
+	CacheMissTokens  int     `json:"cache_miss_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	ReasoningTokens  int     `json:"reasoning_tokens"`
+	Cost             float64 `json:"cost"`
+	Currency         string  `json:"currency"`
+}
+
 // BranchMeta is the small sidecar record that turns flat session files into a
 // navigable conversation tree. The conversation itself remains in the .jsonl
 // file; metadata lives beside it at <session>.meta.

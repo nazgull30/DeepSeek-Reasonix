@@ -253,6 +253,10 @@ type Agent struct {
 	sessCacheHit  atomic.Int64
 	sessCacheMiss atomic.Int64
 
+	// sessionUsage accumulates token and cost totals across every API call this
+	// session so /stats and /context can report cumulative metrics.
+	sessionUsage SessionUsageMeta
+
 	// lastPrefixShape records the previous provider request's cacheable prefix
 	// so usage events can explain prefix churn on the next request.
 	lastPrefixShape     PrefixShape
@@ -577,6 +581,13 @@ func (a *Agent) SetGate(g Gate) {
 	a.gate = g
 }
 
+// SetPlanModeAllowedTools replaces the set of tool names exempt from the
+// plan-mode read-only gate. Propagated so tools registered after construction
+// (e.g. orchestrator agent_spawn/agent_send) can bypass the gate.
+func (a *Agent) SetPlanModeAllowedTools(tools []string) {
+	a.planModeAllowedTools = append([]string(nil), tools...)
+}
+
 // SetPlanModeReadOnlyTrustGate installs the optional confirmation path for MCP
 // tools whose read-only flag comes from an external readOnlyHint and bash
 // commands the user may trust as plan-mode read-only.
@@ -660,6 +671,15 @@ func (a *Agent) LastUsage() *provider.Usage { return a.lastUsage.Load() }
 func (a *Agent) SessionCache() (hit, miss int) {
 	return int(a.sessCacheHit.Load()), int(a.sessCacheMiss.Load())
 }
+
+// SessionUsage returns the cumulative token/cost totals for this session.
+func (a *Agent) SessionUsage() SessionUsageMeta { return a.sessionUsage }
+
+// SetSessionUsage replaces the cumulative session usage with the given value.
+func (a *Agent) SetSessionUsage(u SessionUsageMeta) { a.sessionUsage = u }
+
+// ResetSessionUsage zeros the cumulative session usage counters.
+func (a *Agent) ResetSessionUsage() { a.sessionUsage = SessionUsageMeta{} }
 
 // ContextWindow returns the configured context-window size in tokens. 0
 // means compaction is disabled for this agent.

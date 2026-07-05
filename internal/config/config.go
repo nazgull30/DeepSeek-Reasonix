@@ -55,6 +55,9 @@ type Config struct {
 	Environment      EnvironmentConfig   `toml:"environment"`
 	Plugins          []PluginEntry       `toml:"plugins"`
 	Skills           SkillsConfig        `toml:"skills"`
+	Orchestrator     OrchestratorConfig  `toml:"orchestrator"`
+	Codegraph        CodegraphConfig     `toml:"codegraph"`
+	BuiltInMCP       BuiltInMCPConfig    `toml:"builtin_mcp"`
 	Statusline       StatuslineConfig    `toml:"statusline"`
 	LSP              LSPConfig           `toml:"lsp"`
 	Bot              BotConfig           `toml:"bot"`
@@ -732,6 +735,75 @@ func (c *Config) directProxyHosts() []string {
 // NetworkProxyMode normalizes network.proxy_mode to a known value.
 func (c *Config) NetworkProxyMode() string {
 	return netclient.NormalizeMode(c.Network.ProxyMode)
+}
+
+// OrchestratorConfig defines managed child agents for the in-process
+// multi-agent orchestrator.
+type OrchestratorConfig struct {
+	Agents []OrchestratorAgentEntry `toml:"agents"`
+}
+
+// OrchestratorAgentEntry defines one managed agent in the orchestrator team.
+type OrchestratorAgentEntry struct {
+	Name                  string   `toml:"name"`
+	Model                 string   `toml:"model"`
+	Ref                   string   `toml:"ref"`
+	Skills                []string `toml:"skills"`
+	SkipSkills            []string `toml:"skip_skills"`
+	Paths                 []string `toml:"paths"`
+	SystemPrompt          string   `toml:"system_prompt"`
+	SystemPromptFile      string   `toml:"system_prompt_file"`
+	Persist               bool     `toml:"persist"`
+	Ephemeral             bool     `toml:"ephemeral"`
+	Verbose               bool     `toml:"verbose"`
+	InheritProjectMemory  *bool    `toml:"inherit_project_memory"`
+	Tools                 []string `toml:"tools"`
+}
+
+func (e OrchestratorAgentEntry) ResolveSystemPrompt() (string, error) {
+	if e.SystemPromptFile != "" {
+		data, err := os.ReadFile(e.SystemPromptFile)
+		if err != nil {
+			return "", fmt.Errorf("orchestrator agent %q: read system_prompt_file: %w", e.Name, err)
+		}
+		return string(data), nil
+	}
+	return e.SystemPrompt, nil
+}
+
+// CodegraphConfig controls the CodeGraph MCP server shipped with Reasonix.
+type CodegraphConfig struct {
+	Enabled     bool   `toml:"enabled"`
+	AutoInstall bool   `toml:"auto_install"`
+	Path        string `toml:"path"`
+	Tier        string `toml:"tier"`
+}
+
+func (c CodegraphConfig) ShouldAutoStart() bool {
+	return c.Enabled
+}
+
+func (c CodegraphConfig) ResolvedTier() string {
+	return "background"
+}
+
+// BuiltInMCPConfig controls Reasonix-shipped MCP servers that require no user
+// server definition. They are off by default and become provider-visible only
+// after the user enables them.
+type BuiltInMCPConfig struct {
+	TimeEnabled     bool `toml:"time_enabled"`
+	Context7Enabled bool `toml:"context7_enabled"`
+}
+
+func (c BuiltInMCPConfig) Enabled(name string) bool {
+	switch name {
+	case "time":
+		return c.TimeEnabled
+	case "context7":
+		return c.Context7Enabled
+	default:
+		return false
+	}
 }
 
 // SkillsConfig configures skill discovery. Paths adds extra "custom"-scope skill

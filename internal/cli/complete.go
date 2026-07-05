@@ -90,6 +90,8 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/memory-v5", insert: "/memory-v5 ", hint: i18n.M.CmdMemoryV5, descend: true},
 		{label: "/theme", insert: "/theme ", hint: i18n.M.CmdTheme, descend: true},
 		{label: "/language", insert: "/language ", hint: i18n.M.CmdLanguage, descend: true},
+		{label: "/context", insert: "/context", hint: i18n.M.CmdContext},
+		{label: "/stats", insert: "/stats ", hint: i18n.M.CmdStats},
 		{label: "/help", insert: "/help ", hint: i18n.M.CmdHelp},
 		{label: "/memory", insert: "/memory ", hint: i18n.M.CmdMemory},
 		{label: "/migrate", insert: "/migrate", hint: i18n.M.CmdMigrate},
@@ -109,6 +111,15 @@ func (m *chatTUI) slashItems() []compItem {
 			hint = "🧬 " + hint
 		}
 		items = append(items, compItem{label: "/" + s.Name, insert: "/" + s.Name + " ", hint: hint})
+	}
+	if m.orc != nil {
+		items = append(items,
+			compItem{label: "/agent_spawn", insert: "/agent_spawn ", hint: "run a task on a managed agent"},
+			compItem{label: "/agent_send", insert: "/agent_send ", hint: "send a message to a managed agent"},
+			compItem{label: "/agent_status", insert: "/agent_status", hint: "show agent statuses"},
+			compItem{label: "/agent_stats", insert: "/agent_stats", hint: "show per-agent token/cost stats"},
+			compItem{label: "/agent_clear", insert: "/agent_clear ", hint: "clear a managed agent's session"},
+		)
 	}
 	for _, p := range m.prompts() {
 		items = append(items, compItem{label: "/" + p.Name, insert: "/" + p.Name + " ", hint: p.Description})

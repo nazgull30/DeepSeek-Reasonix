@@ -100,6 +100,30 @@ type Options struct {
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
 	ExtraPlugins []plugin.Spec
+	// SystemPrompt overrides the default base system prompt for this controller.
+	// When non-empty, it replaces cfg.ResolveSystemPrompt() before output style,
+	// language policy, memory, and skills are composed on top (Option 1 semantics).
+	// Designed for orchestrator child agents that need a different role/behavior
+	// while still inheriting REASONIX.md, skills index, etc.
+	SystemPrompt string
+	// ToolDenylist removes named tools from the registry after all built-ins,
+	// plugins, and skills are registered. Used to prevent managed agents from
+	// exposing orchestrator meta-tools or other unwanted capabilities.
+	ToolDenylist []string
+	// InheritProjectMemory controls whether project memory (REASONIX.md /
+	// AGENTS.md hierarchy) is composed into the system prompt. nil means inherit
+	// (default, backward compatible); false means skip. Only meaningful when
+	// AgentName is non-empty (orchestrator child agent).
+	InheritProjectMemory *bool
+	// AgentName identifies the controller being built. Empty means the main
+	// agent; non-empty means an orchestrator child agent. When set, plugins
+	// with a non-empty Agents list are loaded only if this name appears in it.
+	// Plugins with an empty Agents list are always loaded (backward compatible).
+	AgentName string
+	// SkipCodegraph disables codegraph installation and plugin loading for this
+	// controller. Used for orchestrator child agents to avoid N concurrent
+	// downloads/installs when the main controller already handles it.
+	SkipCodegraph bool
 	// TokenMode selects how much optional context/tool surface this session exposes
 	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
 	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
@@ -237,9 +261,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	shell := sandbox.ResolveShell(cfg.Tools.Shell.Prefer, cfg.Tools.Shell.Path, stderr)
 
-	sysPrompt, err := cfg.ResolveSystemPromptForRoot(root)
-	if err != nil {
-		return nil, err
+	var sysPrompt string
+	if opts.SystemPrompt != "" {
+		sysPrompt = opts.SystemPrompt
+	} else {
+		sysPrompt, err = cfg.ResolveSystemPromptForRoot(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Output style: fold the selected persona/tone block into the base prompt
 	// before language/memory/skills append, so a "replace" style (keep-coding
@@ -281,7 +310,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// controller's transient turn-injection and fold in on the next session.
 	mem := memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
-	sysPrompt = memory.Compose(sysPrompt, mem)
+	if opts.InheritProjectMemory == nil || *opts.InheritProjectMemory {
+		sysPrompt = memory.Compose(sysPrompt, mem)
+	}
 
 	// Skills: discover playbooks (built-in + project/custom/global) and fold their
 	// one-liner index into the same cache-stable prefix — names + descriptions
@@ -1075,6 +1106,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}, executor, cfg.Agent.Temperature, sink, control.NewPlannerGate(classifier))
 			label = entry.Model + " + planner " + pe.Model
 		}
+	}
+
+	// ToolDenylist: remove named tools from the registry. Used by orchestrator
+	// child agents to hide meta-tools and other unwanted capabilities.
+	for _, name := range opts.ToolDenylist {
+		reg.Remove(name)
 	}
 
 	ctrlOpts := control.Options{

@@ -19,10 +19,7 @@ func deepSeekV4ProPrice() *provider.Pricing {
 }
 
 func deepSeekV4Prices() map[string]*provider.Pricing {
-	return map[string]*provider.Pricing{
-		"deepseek-v4-flash": deepSeekV4FlashPrice(),
-		"deepseek-v4-pro":   deepSeekV4ProPrice(),
-	}
+	return deepSeekV4PricesUSD()
 }
 
 func deepSeekV4FlashPriceUSD() *provider.Pricing {
@@ -45,7 +42,7 @@ func deepSeekV4PricesUSD() map[string]*provider.Pricing {
 // only used for templates and missing-default backfills.
 func DeepSeekV4PricesForLanguage(lang string) map[string]*provider.Pricing {
 	_ = lang
-	return deepSeekV4Prices()
+	return deepSeekV4PricesUSD()
 }
 
 func deepSeekV4PricesForConfig(c *Config) map[string]*provider.Pricing {

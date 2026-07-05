@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/notify"
+	"reasonix/internal/orchestrator"
 	"reasonix/internal/provider"
 	"reasonix/internal/provider/openai"
 	"reasonix/internal/serve"
@@ -109,6 +110,9 @@ func Run(args []string, version string) int {
 	case "plugin":
 		configureCLIThemeFromConfigNoProbe()
 		return pluginCommand(rest)
+	case "codegraph":
+		configureCLIThemeFromConfigNoProbe()
+		return codegraphCommand(rest)
 	case "doctor":
 		configureCLIThemeFromConfigNoProbe()
 		return doctorCommand(rest, version)
@@ -147,7 +151,7 @@ func isDefaultInteractiveFlag(arg string) bool {
 
 func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	switch cmd {
-	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "plugin", "doctor", "bot", "upgrade", "update":
+	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "plugin", "codegraph", "doctor", "bot", "upgrade", "update":
 		return true
 	default:
 		return false
@@ -645,7 +649,73 @@ func chatREPL(args []string) int {
 		ctrl.SetAutoApproveTools(true)
 	}
 
+	var orc *orchestrator.Orchestrator
+	if cfg != nil && len(cfg.Orchestrator.Agents) > 0 {
+		orc = orchestrator.New(sink)
+		orc.SetMainCtrl(ctrl)
+
+		for _, entry := range cfg.Orchestrator.Agents {
+			modelName := entry.Model
+			if modelName == "" {
+				modelName = cfg.DefaultModel
+			}
+			entryPrompt, pErr := entry.ResolveSystemPrompt()
+			if pErr != nil {
+				fmt.Fprintln(os.Stderr, "orchestrator: agent", entry.Name+":", pErr)
+				continue
+			}
+			agentSink := orchestrator.NewSinkMultiplexer(sink, entry.Name)
+			agentSink.SetVerbose(entry.Verbose)
+			denylist := orchestrator.OrchestratorToolNames()
+			childCtrl, cerr := boot.Build(ctx, boot.Options{
+				Model:                 modelName,
+				AgentName:             entry.Name,
+				MaxSteps:              *maxSteps,
+				Sink:                  agentSink,
+				SystemPrompt:          entryPrompt,
+				ToolDenylist:          denylist,
+				SkipCodegraph:         true,
+				InheritProjectMemory:  entry.InheritProjectMemory,
+			})
+			if cerr != nil {
+				fmt.Fprintln(os.Stderr, "orchestrator: failed to start agent", entry.Name+":", cerr)
+				continue
+			}
+			orc.AddAgent(entry.Name, childCtrl, entry, agentSink)
+		}
+		orc.SetSessionDir(resolveCLISessionDir())
+		if err := orc.LoadSessions(resolveCLISessionDir()); err != nil {
+			fmt.Fprintln(os.Stderr, "orchestrator: load sessions:", err)
+		}
+
+		for _, t := range orchestrator.OrchestratorTools(orc) {
+			ctrl.Registry().Add(t)
+		}
+
+		if orc.HasAgent("git") {
+			if bashTool, ok := ctrl.Registry().Get("bash"); ok {
+				ctrl.Registry().Remove("bash")
+				ctrl.Registry().Add(&orchestrator.NoGitBash{
+					Inner:   bashTool,
+					Orc:     orc,
+					GitName: "git",
+				})
+			}
+		}
+
+		allowed := cfg.Agent.PlanModeAllowedTools
+		merged := make([]string, 0, len(allowed)+2)
+		merged = append(merged, allowed...)
+		merged = append(merged, "agent_spawn", "agent_send")
+		ctrl.SetPlanModeAllowedTools(merged)
+
+		if names := orc.AgentNames(); len(names) > 0 {
+			fmt.Fprintf(os.Stderr, "orchestrator: %d managed agent(s) — %s\n", len(names), strings.Join(names, ", "))
+		}
+	}
+
 	m := newChatTUI(ctrl, missing, eventCh, termW)
+	m.orc = orc
 	if cfg, err := config.Load(); err == nil {
 		m.outputStyle = cfg.Agent.OutputStyle    // shown as the active entry in /output-style
 		m.statuslineCmd = cfg.Statusline.Command // custom status-line command, "" = built-in row
@@ -704,6 +774,12 @@ func chatREPL(args []string) int {
 	}()
 	final, runErr := p.Run()
 	signal.Stop(hangup)
+	if orc != nil {
+		if err := orc.SaveSessions(resolveCLISessionDir()); err != nil {
+			fmt.Fprintln(os.Stderr, "orchestrator: save sessions:", err)
+		}
+	}
+
 	// Close the active controller plus any retired ones from /model switches.
 	// Retired controllers were stashed rather than closed at switch time
 	// because Controller.Close() runs SessionEnd hooks and kills plugin

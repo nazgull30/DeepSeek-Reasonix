@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/i18n"
 	"reasonix/internal/memory"
 	"reasonix/internal/migration"
+	"reasonix/internal/orchestrator"
 	"reasonix/internal/outputstyle"
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
@@ -102,6 +103,10 @@ type chatTUI struct {
 	// yoloRestoreToolApprovalMode remembers the Ask/Auto base mode that Ctrl+Y
 	// should restore after a desktop-style YOLO toggle.
 	yoloRestoreToolApprovalMode string
+
+	// orc is the in-process multi-agent orchestrator, nil when no agents are
+	// configured in reasonix.toml.
+	orc *orchestrator.Orchestrator
 
 	// pendingInterject queues input typed while a turn runs; each TurnDone
 	// dequeues the front and submits it as the next turn.
@@ -1351,6 +1356,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, msg.err))
 		} else {
 			_ = m.ctrl.Snapshot()
+		}
+
+	case agentSpawnMsg:
+		if msg.err != nil {
+			m.notice(fmt.Sprintf("%s: %v", msg.name, msg.err))
+		} else {
+			m.notice(msg.name + " → ok")
 		}
 
 	case modelSwitchMsg:
@@ -3593,6 +3605,170 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.runExportCommand(input)
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, cmd)))
+	case "/agent_spawn":
+		m.echoLocalCommand(input)
+		if m.orc == nil {
+			m.notice("no orchestrator configured")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		parts := strings.SplitN(rest, " ", 2)
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+			m.notice("usage: /agent_spawn <name> <task>")
+			break
+		}
+		name, task := parts[0], parts[1]
+		orc := m.orc
+		return func() tea.Msg {
+			result, err := orc.SendMessage(context.Background(), name, task)
+			return agentSpawnMsg{name: name, result: result, err: err}
+		}
+	case "/agent_send":
+		m.echoLocalCommand(input)
+		if m.orc == nil {
+			m.notice("no orchestrator configured")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		parts := strings.SplitN(rest, " ", 2)
+		if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+			m.notice("usage: /agent_send <name> <message>")
+			break
+		}
+		name, msg := parts[0], parts[1]
+		orc := m.orc
+		return func() tea.Msg {
+			result, err := orc.SendMessage(context.Background(), name, msg)
+			return agentSpawnMsg{name: name, result: result, err: err}
+		}
+	case "/agent_clear":
+		m.echoLocalCommand(input)
+		if m.orc == nil {
+			m.notice("no orchestrator configured")
+			break
+		}
+		name := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		if name == "" {
+			m.notice("usage: /agent_clear <name>")
+			break
+		}
+		a, ok := m.orc.Agent(name)
+		if !ok {
+			m.notice(fmt.Sprintf("agent %q not found", name))
+			break
+		}
+		oldPath := a.Ctrl.SessionPath()
+		if err := a.Ctrl.NewSession(); err != nil {
+			m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
+			break
+		}
+		if oldPath != "" {
+			os.Remove(oldPath)
+			os.Remove(oldPath + ".meta")
+		}
+		dir := m.orc.SessionDir()
+		if dir != "" {
+			a.Ctrl.SetSessionPath(filepath.Join(dir, "orchestrator_"+name+".jsonl"))
+		}
+		m.notice(fmt.Sprintf("%s cleared", name))
+	case "/agent_stats":
+		m.echoLocalCommand(input)
+		if m.orc == nil {
+			m.notice("no orchestrator configured")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		agentName := ""
+		if rest != "" {
+			agentName = rest
+		}
+		if agentName != "" {
+			a, ok := m.orc.Agent(agentName)
+			if !ok {
+				m.notice(fmt.Sprintf("agent %q not found", agentName))
+				break
+			}
+			stats := a.Ctrl.SessionUsage()
+			hit, miss := a.Ctrl.SessionCache()
+			m.notice(fmt.Sprintf("%s: %s · cache %.0f%% · input %s · output %s",
+				a.Name, unitFormat(float64(stats.TotalTokens)),
+				pct(hit, hit+miss),
+				unitFormat(float64(stats.PromptTokens)),
+				unitFormat(float64(stats.CompletionTokens)),
+			))
+		} else {
+			for _, name := range m.orc.AgentNames() {
+				a, _ := m.orc.Agent(name)
+				stats := a.Ctrl.SessionUsage()
+				hit, miss := a.Ctrl.SessionCache()
+				m.commitLine(fmt.Sprintf("  %s: %s · cache %.0f%% · input %s · output %s",
+					name, unitFormat(float64(stats.TotalTokens)),
+					pct(hit, hit+miss),
+					unitFormat(float64(stats.PromptTokens)),
+					unitFormat(float64(stats.CompletionTokens)),
+				))
+			}
+		}
+	case "/stats":
+		m.echoLocalCommand(input)
+		stats := m.ctrl.SessionUsage()
+		hit, miss := m.ctrl.SessionCache()
+		sb := strings.Builder{}
+		sb.WriteString("── Session Usage ───────────────────────────\n")
+		sb.WriteString(fmt.Sprintf("Total:  %s tokens (input: %s, output: %s)\n",
+			unitFormat(float64(stats.TotalTokens)),
+			unitFormat(float64(stats.PromptTokens)),
+			unitFormat(float64(stats.CompletionTokens)),
+		))
+		total := hit + miss
+		if total > 0 {
+			sb.WriteString(fmt.Sprintf("Cache:  %.0f%% hit (%s / %s)\n",
+				pct(hit, total), unitFormat(float64(hit)), unitFormat(float64(total))))
+		}
+		if stats.ReasoningTokens > 0 {
+			sb.WriteString(fmt.Sprintf("Reasoning: %s tokens\n", unitFormat(float64(stats.ReasoningTokens))))
+		}
+		if stats.Cost > 0 {
+			sb.WriteString(fmt.Sprintf("Cost:   %s%.4f\n", stats.Currency, stats.Cost))
+		}
+		m.commitLine(sb.String())
+	case "/context":
+		m.echoLocalCommand(input)
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		agentName := ""
+		if rest != "" {
+			agentName = rest
+		}
+		if agentName != "" {
+			if m.orc == nil {
+				m.notice("no orchestrator configured")
+				break
+			}
+			a, ok := m.orc.Agent(agentName)
+			if !ok {
+				m.notice(fmt.Sprintf("agent %q not found", agentName))
+				break
+			}
+			bk := a.Ctrl.ContextBreakdown()
+			if bk == nil || bk.TotalEstimated == 0 && bk.Usage.TotalTokens == 0 {
+				m.notice(fmt.Sprintf("%s: no session data yet", a.Name))
+				break
+			}
+			bk.Verbose = false
+			for _, ln := range strings.Split(bk.FormatBreakdown(), "\n") {
+				m.commitLine(ln)
+			}
+			break
+		}
+		bk := m.ctrl.ContextBreakdown()
+		if bk == nil || bk.TotalEstimated == 0 && bk.Usage.TotalTokens == 0 {
+			m.notice("no session data yet")
+			break
+		}
+		bk.Verbose = false
+		for _, ln := range strings.Split(bk.FormatBreakdown(), "\n") {
+			m.commitLine(ln)
+		}
 	default:
 		// A custom command wins over a skill of the same name; both resolve to a turn.
 		if sent, ok := m.ctrl.CustomCommand(input); ok {
@@ -4032,6 +4208,32 @@ func displayLineForImageRefs(line string) string {
 		return " [image" + strconv.Itoa(idx) + "]"
 	})
 	return strings.TrimSpace(out)
+}
+
+// agentSpawnMsg carries the result of an /agent_spawn or /agent_send call
+// from the orchestrator back to the TUI update loop.
+type agentSpawnMsg struct {
+	name   string
+	result string
+	err    error
+}
+
+func pct(part, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(part) / float64(total) * 100
+}
+
+func unitFormat(n float64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", n/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", n/1_000)
+	default:
+		return fmt.Sprintf("%.0f", n)
+	}
 }
 
 // eventSink is the event.Sink the agent emits to in TUI mode. Each event

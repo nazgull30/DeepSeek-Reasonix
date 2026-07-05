@@ -168,6 +168,9 @@ type Status interface {
 	Balance(ctx context.Context) (*billing.Balance, error)
 	Jobs() []jobs.View
 	Todos() []evidence.TodoItem
+	SessionCache() (hit, miss int)
+	SessionUsage() agent.SessionUsageMeta
+	ContextBreakdown() *agent.ContextBreakdown
 }
 
 // SessionPersistence covers snapshotting a session and tearing down its on-disk
