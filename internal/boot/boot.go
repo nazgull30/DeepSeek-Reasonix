@@ -1740,14 +1740,14 @@ func trustedRawReadOnlyToolNames(names []string) map[string]bool {
 // returned (backward compatible). When set, only plugins whose Agents list is
 // empty (available to all) or contains the agent name are included.
 func filterPluginsForAgent(entries []config.PluginEntry, agentName string) []config.PluginEntry {
-	if agentName == "" {
-		return entries
-	}
 	filtered := make([]config.PluginEntry, 0, len(entries))
 	for _, e := range entries {
 		if len(e.Agents) == 0 {
 			filtered = append(filtered, e)
 			continue
+		}
+		if agentName == "" {
+			continue // main agent: skip plugins scoped to named agents
 		}
 		for _, a := range e.Agents {
 			if strings.EqualFold(a, agentName) {
