@@ -65,7 +65,7 @@ Key fields per child:
 - `system_prompt` — Custom system prompt
 - `verbose` — Show full transcript in parent view (default: false)
 - `tools` — Optional tool allowlist
-- `skip_codegraph` — Skip CodeGraph install for this child (avoids N concurrent downloads)
+- `skip_codegraph` — Skip CodeGraph install for this child (avoids N concurrent downloads); hardcoded `true` for all child agents in `cli.go`
 
 ### Automatic Session Persistence
 
@@ -189,12 +189,12 @@ Same as `/stats` but for child agents. Includes:
 
 ### DeepSeek Default Pricing in USD
 
-**File:** `internal/config/config.go`, `internal/config/render.go`
+**File:** `internal/config/config.go`, `internal/config/pricing.go`
 
 Changed the hardcoded DeepSeek pricing from ¥ (CNY) to USD to match the
-international billing model:
-- deepseek-chat: $0.27/M input, $1.10/M output
-- deepseek-reasoner: $0.55/M input, $2.18/M output (with reasoning)
+international billing model ($/M tokens):
+- deepseek-v4-flash: $0.14 input, $0.28 output
+- deepseek-v4-pro: $0.435 input, $0.87 output
 
 ### Codegraph Config Type
 
@@ -239,3 +239,7 @@ Added `OrchestratorAgentEntry` configuration type supporting:
 |--------|-------------|
 | `6973ae44` | Add orchestrator, context, and codegraph files from fork |
 | `acb61db0` | Weave orchestrator, codegraph, context, token-metrics, USD pricing onto v1.16.2 |
+| `f5ecb5c8` | Add codegraph runtime, Registry.Remove, CUSTOM_FEATURES.md |
+| `446ee0a5` | Fix: USD default pricing, SkipPlugins for child agents (superseded) |
+| `1167772f` | Per-agent MCP scoping via PluginEntry.Agents field |
+| `8e49ebf8` | Main agent skips plugins scoped to named agents |
