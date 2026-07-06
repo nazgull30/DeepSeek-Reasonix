@@ -2527,6 +2527,12 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 func (c *Controller) Resume(s *agent.Session, path string) {
 	if c.executor != nil {
 		c.executor.SetSession(s)
+		// Restore cumulative usage from branch meta so /context shows real
+		// Input/Output counts after session resume. Falls back to zero when
+		// the meta has no usage record (e.g. a pre-usage session).
+		if usage := agent.LoadBranchUsage(path); usage != nil {
+			c.executor.SetSessionUsage(*usage)
+		}
 	}
 	c.ResetPlannerSession()
 	c.mu.Lock()
@@ -2724,7 +2730,20 @@ func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 	// like SetBranchModelPreserveUpdated. The single write subsumes the old
 	// EnsureBranchMeta / SetBranchModel / TouchBranchMeta sequence.
 	preview, turns := agent.SessionPreviewFromMessages(s.Snapshot())
-	return agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity)
+	if err := agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity); err != nil {
+		return err
+	}
+	// Persist cumulative usage so /context shows real Input/Output counts after
+	// session resume for orchestrator sub-agents and any other resumed session.
+	if c.executor != nil {
+		usage := c.executor.SessionUsage()
+		if usage.TotalTokens > 0 {
+			if usageErr := agent.SetBranchUsage(path, &usage); usageErr != nil {
+				slog.Warn("controller: save session usage to branch meta", "err", usageErr)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRewrite bool) (string, bool, error) {
