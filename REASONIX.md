@@ -1,8 +1,8 @@
 # Reasonix project memory
 
-This file is loaded into every session's system prompt (the cache-stable prefix),
-so keep it concise and durable — it is the project's standing instructions to the
-agent. It is the Reasonix analog of Claude Code's CLAUDE.md.
+This file is loaded into every session's system prompt (the cache-stable prefix)
+as **hard rules** the agent MUST follow. It is the Reasonix analog of Claude Code's
+CLAUDE.md.
 
 ## Conventions
 
@@ -17,9 +17,13 @@ agent. It is the Reasonix analog of Claude Code's CLAUDE.md.
 
 ## Memory
 
-- Hierarchical docs: `REASONIX.md` (this file, committed/shared), `REASONIX.local.md`
-  (personal, git-ignored), user-global `~/.config/reasonix/REASONIX.md`, and any
-  `REASONIX.md` in an ancestor dir. `AGENTS.md` is accepted as a fallback name.
+- Hierarchical docs: All REASONIX.md / AGENTS.md content is treated as **hard rules** that
+  the model MUST follow. Docs are loaded with ascending precedence: user-global
+  (`~/.config/reasonix/REASONIX.md`), ancestors, project root (`REASONIX.md` / `AGENTS.md`),
+  then project-local (`REASONIX.local.md` / `AGENTS.local.md`). Later sources override earlier ones.
+- `verify:` commands (e.g. `- verify: go test ./...`) anywhere in any doc are
+  **code-enforced gates** — the model must run them before the turn can end.
+  No special section heading is required.
 - `@path` on its own line imports another file's contents.
 - `#<note>` in chat quick-adds a line here. The `remember` tool saves durable
   facts to the per-project auto-memory store (frontmatter files + `MEMORY.md`
@@ -27,9 +31,9 @@ agent. It is the Reasonix analog of Claude Code's CLAUDE.md.
 
 ## Notes
 
-## Pre-push CI simulation
+## Pre-push CI simulation (hard rules)
 
-Run these **before every commit** to catch the fastest CI failures locally:
+These are **hard rules** — run them before every commit:
 
 ```bash
 gofmt -w .                          # catches gofmt (saves ~13s CI)

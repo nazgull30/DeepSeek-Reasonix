@@ -129,8 +129,8 @@ func (s *Set) Block() string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("# Memory\n\n")
-	b.WriteString("Persistent context loaded from memory files. Treat it as durable, user-authored guidance for this project.\n")
+	b.WriteString("# Hard Rules — You MUST follow these\n\n")
+	b.WriteString("The following are hard rules loaded from project memory files. The model MUST follow every instruction below — these are not suggestions.\n")
 
 	for _, d := range s.Docs {
 		fmt.Fprintf(&b, "\n## %s (%s)\n\n%s\n", d.Path, d.Scope, strings.TrimSpace(d.Body))
