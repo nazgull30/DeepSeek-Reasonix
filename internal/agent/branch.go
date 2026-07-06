@@ -70,6 +70,10 @@ type BranchMeta struct {
 	Turns        int               `json:"turns,omitempty"`
 	Preview      string            `json:"preview,omitempty"`
 	InFlightTurn *InFlightTurnMeta `json:"in_flight_turn,omitempty"`
+	// SessionUsage records the cumulative token/cost totals at the last snapshot,
+	// so the /context command shows real Input/Output counts even after a session
+	// is resumed. Nil before the first usage-bearing snapshot.
+	SessionUsage *SessionUsageMeta `json:"session_usage,omitempty"`
 }
 
 // BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
@@ -409,4 +413,34 @@ func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivi
 	// authoritative — listing can then trust Turns (even 0) without re-decoding.
 	m.SchemaVersion = BranchMetaCountsVersion
 	return saveBranchMeta(sessionPath, m, markActivity)
+}
+
+// SetBranchUsage persists the session's cumulative usage into the branch meta,
+// so /context can show real Input/Output counts after session resume. A nil
+// usage is a no-op.
+func SetBranchUsage(sessionPath string, usage *SessionUsageMeta) error {
+	if usage == nil || sessionPath == "" {
+		return nil
+	}
+	unlock := lockSessionSavePath(sessionPath)
+	defer unlock()
+	m, err := EnsureBranchMeta(sessionPath)
+	if err != nil {
+		return err
+	}
+	m.SessionUsage = usage
+	return saveBranchMeta(sessionPath, m, true)
+}
+
+// LoadBranchUsage loads the cumulative session usage from the branch meta.
+// Returns nil when the meta has no usage record.
+func LoadBranchUsage(sessionPath string) *SessionUsageMeta {
+	if sessionPath == "" {
+		return nil
+	}
+	m, ok, err := LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		return nil
+	}
+	return m.SessionUsage
 }

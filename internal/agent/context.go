@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -164,6 +165,9 @@ func turnsFromCheckpoints(msgs []provider.Message, cps *checkpoint.Store) []Turn
 				break
 			}
 		}
+		// Strip XML-like tags (e.g. <response-language>) that are internal
+		// system markup, not user-readable content.
+		prompt = stripXMLTags(prompt)
 		if len([]rune(prompt)) > 48 {
 			prompt = string([]rune(prompt)[:48]) + "…"
 		}
@@ -298,4 +302,13 @@ func plural(n int) string {
 		return "s"
 	}
 	return ""
+}
+
+// stripXMLTags removes XML/HTML-like tags (<...>) from a string, collapsing
+// internal whitespace so the display text is readable. Tags like
+// <response-language> are internal system markup, not user-facing content.
+var xmlTagRe = regexp.MustCompile(`</?[^>]+>`)
+
+func stripXMLTags(s string) string {
+	return strings.TrimSpace(xmlTagRe.ReplaceAllString(s, ""))
 }
