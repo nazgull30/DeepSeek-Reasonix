@@ -395,11 +395,8 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 }
 
 func recoverySessionPath(originalPath string, digest [sha256.Size]byte) string {
-	parent := BranchID(originalPath)
-	if parent == "" {
-		parent = "session"
-	}
-	return filepath.Join(filepath.Dir(originalPath), fmt.Sprintf("%s-recovery-%x.jsonl", parent, digest[:8]))
+	h := sha256.Sum256([]byte(originalPath))
+	return filepath.Join(filepath.Dir(originalPath), fmt.Sprintf("recovery-%x-%x.jsonl", h[:4], digest[:8]))
 }
 
 func firstNonEmpty(values ...string) string {
