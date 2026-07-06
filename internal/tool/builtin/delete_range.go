@@ -21,7 +21,7 @@ type deleteRange struct {
 func (deleteRange) Name() string { return "delete_range" }
 
 func (deleteRange) Description() string {
-	return "Delete a contiguous text range from a file using exact start/end text anchors. Each anchor must match exactly one line. Returns unified diff on success. Use for large deletions — smaller changes should use edit_file."
+	return "Delete a text range from a file using exact start/end text anchors. Each anchor must match exactly one line. Returns unified diff on success."
 }
 
 func (deleteRange) Schema() json.RawMessage {

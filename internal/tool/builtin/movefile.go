@@ -27,7 +27,7 @@ type moveFile struct {
 func (moveFile) Name() string { return "move_file" }
 
 func (moveFile) Description() string {
-	return "Move or rename a file from source_path to destination_path. Creates the destination parent directory as needed. Use instead of shell mv, Move-Item, or ren for file moves so workspace confinement and file-edit permissions apply."
+	return "Move or rename a file from source_path to destination_path. Creates parent directories as needed. Prefer over shell mv/Move-Item for workspace confinement."
 }
 
 func (moveFile) Schema() json.RawMessage {

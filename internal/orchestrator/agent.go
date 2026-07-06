@@ -22,11 +22,11 @@ const (
 )
 
 type ManagedAgent struct {
-	Name       string
-	Ctrl       *control.Controller
-	Sink       *SinkMultiplexer
-	Inbox      *Inbox
-	Config     config.OrchestratorAgentEntry
+	Name   string
+	Ctrl   *control.Controller
+	Sink   *SinkMultiplexer
+	Inbox  *Inbox
+	Config config.OrchestratorAgentEntry
 
 	mu         sync.Mutex
 	status     AgentStatus

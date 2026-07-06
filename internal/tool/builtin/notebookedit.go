@@ -33,12 +33,7 @@ func (notebookEdit) Name() string { return "notebook_edit" }
 func (notebookEdit) ReadOnly() bool { return false }
 
 func (notebookEdit) Description() string {
-	return "Edit one cell of a Jupyter notebook (.ipynb). Target a cell by 0-based " +
-		"cell_number (or cell_id). edit_mode: \"replace\" (default) swaps the cell's " +
-		"source; \"insert\" adds a new cell after cell_number (use -1 to prepend at the " +
-		"top), taking cell_type and new_source; \"delete\" removes the cell. cell_type is " +
-		"\"code\" or \"markdown\" (required for insert). Editing a code cell clears its " +
-		"outputs. Prefer this over edit_file for notebooks — it keeps the JSON valid."
+	return "Edit one cell of a Jupyter notebook (.ipynb). edit_mode: \"replace\" (default) swaps the cell's source; \"insert\" adds a new cell; \"delete\" removes it. cell_type is \"code\" or \"markdown\" (required for insert). Prefer this over edit_file for notebooks."
 }
 
 func (notebookEdit) Schema() json.RawMessage {

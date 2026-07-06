@@ -66,7 +66,7 @@ var readOnlySubagentWorkflowTools = []string{
 	"connect_tool_source",
 }
 
-const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed only while max_subagent_depth leaves another delegation layer; unsupported background job tools (parallel_tasks, wait, bash_output, kill_shell) are excluded; bash is exposed as foreground-only inside subagents."
+const subagentToolBoundarySummary = "Recursive agent/skill tools stop at max_subagent_depth; background job tools (parallel_tasks, wait, bash_output, kill_shell) are excluded; bash runs foreground-only inside subagents."
 
 // SubagentMetaTools returns the tool names that spawned agents should not inherit
 // from the parent registry unless a future call site deliberately opts into a
@@ -266,7 +266,7 @@ func (t *TaskTool) WithParentResultState(fn func() *ContentReplacementState) *Ta
 func (t *TaskTool) Name() string { return "task" }
 
 func (t *TaskTool) Description() string {
-	return "Spawn a sub-agent for a focused sub-task. The sub-agent runs in its own session with the same provider and a filtered tool list (defaults to every parent tool, then applies the subagent boundary: " + subagentToolBoundarySummary + "). Only its final answer is returned. Use this to (a) keep long exploration sequences out of the parent's context budget, or (b) delegate self-contained work like 'find every place that calls X and summarise the patterns'."
+	return "Spawn a sub-agent for a focused sub-task. The sub-agent runs in its own session with the same provider and a filtered tool list: " + subagentToolBoundarySummary + " Only its final answer is returned. Use to keep long sequences out of parent context or delegate self-contained work."
 }
 
 func (t *TaskTool) Schema() json.RawMessage {
@@ -321,7 +321,7 @@ func NewReadOnlyTaskTool(task *TaskTool) *ReadOnlyTaskTool {
 func (*ReadOnlyTaskTool) Name() string { return "read_only_task" }
 
 func (*ReadOnlyTaskTool) Description() string {
-	return "Spawn a read-only research sub-agent for a focused investigation. The sub-agent runs in an isolated, ephemeral session with read-only tools only; bash is wrapped to allow only plan-mode safe foreground commands. It cannot write files, install capabilities, mutate memory, run background jobs, continue/fork transcripts, or delegate to writer-capable agents. Read-only nested delegation may be available until max_subagent_depth is reached. Only its final answer is returned."
+	return "Spawn a read-only research sub-agent for a focused investigation. The sub-agent runs in an isolated, ephemeral session with read-only tools; bash runs in plan-mode safe foreground mode only. Cannot write files, install, mutate memory, background jobs, or fork transcripts. Only the final answer is returned."
 }
 
 func (*ReadOnlyTaskTool) Schema() json.RawMessage {

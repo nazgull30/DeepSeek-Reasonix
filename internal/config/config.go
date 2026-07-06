@@ -745,19 +745,19 @@ type OrchestratorConfig struct {
 
 // OrchestratorAgentEntry defines one managed agent in the orchestrator team.
 type OrchestratorAgentEntry struct {
-	Name                  string   `toml:"name"`
-	Model                 string   `toml:"model"`
-	Ref                   string   `toml:"ref"`
-	Skills                []string `toml:"skills"`
-	SkipSkills            []string `toml:"skip_skills"`
-	Paths                 []string `toml:"paths"`
-	SystemPrompt          string   `toml:"system_prompt"`
-	SystemPromptFile      string   `toml:"system_prompt_file"`
-	Persist               bool     `toml:"persist"`
-	Ephemeral             bool     `toml:"ephemeral"`
-	Verbose               bool     `toml:"verbose"`
-	InheritProjectMemory  *bool    `toml:"inherit_project_memory"`
-	Tools                 []string `toml:"tools"`
+	Name                 string   `toml:"name"`
+	Model                string   `toml:"model"`
+	Ref                  string   `toml:"ref"`
+	Skills               []string `toml:"skills"`
+	SkipSkills           []string `toml:"skip_skills"`
+	Paths                []string `toml:"paths"`
+	SystemPrompt         string   `toml:"system_prompt"`
+	SystemPromptFile     string   `toml:"system_prompt_file"`
+	Persist              bool     `toml:"persist"`
+	Ephemeral            bool     `toml:"ephemeral"`
+	Verbose              bool     `toml:"verbose"`
+	InheritProjectMemory *bool    `toml:"inherit_project_memory"`
+	Tools                []string `toml:"tools"`
 }
 
 func (e OrchestratorAgentEntry) ResolveSystemPrompt() (string, error) {
