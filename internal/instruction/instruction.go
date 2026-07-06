@@ -33,22 +33,16 @@ func FromContext(ctx context.Context) []VerifyCheck {
 	return append([]VerifyCheck(nil), checks...)
 }
 
-// ExtractHostChecks reads only the structured "Reasonix host checks" section.
-// Ordinary project instructions remain guidance and do not become hard gates.
+// ExtractHostChecks scans the entire document body for verify: bullets and
+// returns them as host-observable checks. Since everything in the memory docs
+// is treated as hard rules, any verify: bullet anywhere in the document is
+// extracted as a gate — no special section is required.
 func ExtractHostChecks(docs []memory.Source) []VerifyCheck {
 	seen := map[string]bool{}
 	var checks []VerifyCheck
 	for _, doc := range docs {
-		inSection := false
 		for i, raw := range strings.Split(doc.Body, "\n") {
 			line := strings.TrimRight(raw, "\r")
-			if heading, ok := markdownHeading(line); ok {
-				inSection = strings.EqualFold(heading, "Reasonix host checks")
-				continue
-			}
-			if !inSection {
-				continue
-			}
 			command, ok := verifyBullet(line)
 			if !ok || seen[command] {
 				continue
@@ -62,23 +56,6 @@ func ExtractHostChecks(docs []memory.Source) []VerifyCheck {
 		}
 	}
 	return checks
-}
-
-func markdownHeading(line string) (string, bool) {
-	line = strings.TrimSpace(line)
-	if !strings.HasPrefix(line, "#") {
-		return "", false
-	}
-	i := 0
-	for i < len(line) && line[i] == '#' {
-		i++
-	}
-	if i == 0 || i >= len(line) || line[i] != ' ' {
-		return "", false
-	}
-	heading := strings.TrimSpace(line[i+1:])
-	heading = strings.TrimSpace(strings.TrimRight(heading, "#"))
-	return heading, heading != ""
 }
 
 func verifyBullet(line string) (string, bool) {
