@@ -739,6 +739,10 @@ func (s *service) sessionClose(_ context.Context, raw json.RawMessage) (any, err
 		return nil, err
 	}
 	if sess := s.takeSession(p.SessionID); sess != nil {
+		// Snapshot before aborting so any non-turn state is captured.
+		if err := sess.ctrl.Snapshot(); err != nil {
+			slog.Warn("acp: session/close snapshot", "session", sess.id, "err", err)
+		}
 		sess.abortAndWait()
 		sess.ctrl.Close()
 	}
@@ -1034,7 +1038,11 @@ func (s *service) closeAll() {
 	s.sessions = make(map[string]*acpSession)
 	s.mu.Unlock()
 	for _, sess := range sessions {
-		sess.abort()
+		// Snapshot any unsaved state before aborting.
+		if err := sess.ctrl.Snapshot(); err != nil {
+			slog.Warn("acp: closeAll snapshot", "session", sess.id, "err", err)
+		}
+		sess.abortAndWait() // wait for in-flight turn to finish so persistAfterTurn completes
 		sess.ctrl.Close()
 	}
 }

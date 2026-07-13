@@ -702,14 +702,26 @@ func chatREPL(args []string) int {
 	// when executed while the TUI is alive.
 	if fm, ok := final.(chatTUI); ok {
 		for _, oc := range fm.oldControllers {
+			if err := oc.Snapshot(); err != nil {
+				slog.Warn("cli: snapshot old controller", "err", err)
+			}
 			oc.Close()
 		}
 		if fm.ctrl != nil {
+			if err := fm.ctrl.Snapshot(); err != nil {
+				slog.Warn("cli: snapshot before close", "err", err)
+			}
 			fm.ctrl.Close()
 		} else {
+			if err := ctrl.Snapshot(); err != nil {
+				slog.Warn("cli: snapshot before close", "err", err)
+			}
 			ctrl.Close()
 		}
 	} else {
+		if err := ctrl.Snapshot(); err != nil {
+			slog.Warn("cli: snapshot before close", "err", err)
+		}
 		ctrl.Close()
 	}
 	if orc != nil {
