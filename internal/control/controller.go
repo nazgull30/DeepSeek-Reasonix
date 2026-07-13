@@ -2645,7 +2645,8 @@ func (c *Controller) snapshotActivityIfChanged(startMessages int) {
 }
 
 // SetSessionPath pins where auto-save lands (a fresh session file minted by the
-// caller when no resume path applies).
+// caller when no resume path applies). The caller MUST Snapshot() first before
+// setting the path to empty — otherwise any unsaved content is silently lost.
 func (c *Controller) SetSessionPath(p string) {
 	c.mu.Lock()
 	c.sessionPath = p

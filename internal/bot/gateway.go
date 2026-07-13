@@ -236,6 +236,9 @@ func (gw *BotGateway) Stop() {
 		if state.cancel != nil {
 			state.cancel()
 		}
+		if err := state.ctrl.Snapshot(); err != nil {
+			gw.logger.Warn("bot gateway: snapshot before stop", "err", err)
+		}
 		state.ctrl.Close()
 		delete(gw.controllers, key)
 	}
