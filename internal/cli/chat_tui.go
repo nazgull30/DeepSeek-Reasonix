@@ -3647,7 +3647,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 				break
 			}
 			bk := a.Ctrl.ContextBreakdown()
-			if bk == nil || bk.TotalEstimated == 0 && bk.Usage.TotalTokens == 0 {
+			if bk == nil || bk.ConversationTokens == 0 && bk.Usage.TotalTokens == 0 {
 				m.notice(fmt.Sprintf("%s: no session data yet", a.Name))
 				break
 			}
@@ -3658,7 +3658,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			break
 		}
 		bk := m.ctrl.ContextBreakdown()
-		if bk == nil || bk.TotalEstimated == 0 && bk.Usage.TotalTokens == 0 {
+		if bk == nil || bk.ConversationTokens == 0 && bk.Usage.TotalTokens == 0 {
 			m.notice("no session data yet")
 			break
 		}
