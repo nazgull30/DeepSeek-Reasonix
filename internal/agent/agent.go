@@ -468,11 +468,13 @@ func (a *Agent) Session() *Session {
 // so the model picks up exactly where it left off. Callers serialise it against a
 // running turn (it only fires while idle); sessMu guards the pointer swap itself.
 func (a *Agent) SetSession(s *Session) {
+	a.lastUsage.Store(nil)
 	a.sessMu.Lock()
 	a.session = s
 	a.sessMu.Unlock()
 	a.sessCacheHit.Store(0)
 	a.sessCacheMiss.Store(0)
+	a.evidence = evidence.NewLedger()
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
