@@ -656,6 +656,7 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	}
 	if err := c.runner.Run(ctx, input); err != nil {
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
+			c.snapshotActivityIfChanged(startMessages)
 			c.stripTurnMessagesAfter(startMessages)
 		}
 		return err
@@ -695,6 +696,7 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	}()
 	if err := c.runner.Run(ctx, c.ComposeSynthetic(planApprovedMessage)); err != nil {
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
+			c.snapshotActivityIfChanged(execStart)
 			c.stripTurnMessagesAfter(execStart)
 		}
 		return err
