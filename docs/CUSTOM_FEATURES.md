@@ -137,8 +137,9 @@ npm run build
 # 2. Replace the bundle in this repo
 cd /Users/nazgul/Documents/Projects/Sources/Misc/DeepSeek-Reasonix
 rm -rf codegraph/lib
-cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/dist   codegraph/lib/dist
-cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/node_modules codegraph/lib/node_modules
+mkdir -p codegraph/lib
+cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/dist          codegraph/lib/dist
+cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/node_modules  codegraph/lib/node_modules
 cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package.json     codegraph/lib/package.json
 cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package-lock.json codegraph/lib/package-lock.json
 ```
