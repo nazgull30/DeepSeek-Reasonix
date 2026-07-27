@@ -51,6 +51,9 @@ node_modules/
 # CodeGraph per-project index (rebuilt locally; never committed)
 .codegraph/
 
+# Custom CodeGraph bundle with GDScript support
+codegraph/lib/
+
 # Editor / OS
 .DS_Store
 Thumbs.db
@@ -59,3 +62,4 @@ Thumbs.db
 /site/public/av/
 
 benchmarks/context-maintenance-e2e/run/
+.cate
