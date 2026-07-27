@@ -440,7 +440,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 			bgSpecs = append(bgSpecs, spec)
 			bgNotice()
-			go func(bin, root string) {
+			go func(bin, root string, warm bool) {
+				if !warm {
+					if out, err := codegraph.Index(bin, root); err != nil {
+						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+							Text: "codegraph: initial index failed (" + err.Error() + "): " + out})
+					}
+				}
 				syncOnce := func() {
 					if out, err := codegraph.Sync(bin, root); err != nil {
 						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
@@ -458,7 +464,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 						syncOnce()
 					}
 				}
-			}(bin, root)
+			}(bin, root, warm)
 		case cfg.Codegraph.AutoInstall:
 			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
 			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")

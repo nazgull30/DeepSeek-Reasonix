@@ -155,6 +155,26 @@ func EnsureInit(ctx context.Context, bin, root string) error {
 	return nil
 }
 
+// Index runs the codegraph index command for root. It is a no-op when root is
+// unset or when the project has not been initialized (no .codegraph/ directory).
+func Index(bin, root string) (string, error) {
+	if root == "" {
+		return "", nil
+	}
+	if !Initialized(root) {
+		return "", nil
+	}
+	cmd := exec.Command(bin, "index", root)
+	cmd.Dir = root
+	proc.HideWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
+	if err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
 // Sync runs the codegraph sync command for root. It is a no-op when root is
 // unset or when the project has not been initialized (no .codegraph/ directory),
 // which prevents noisy "CodeGraph not initialized" errors when init was
