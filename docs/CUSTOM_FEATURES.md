@@ -114,6 +114,39 @@ auto_install = true
 path = ""
 ```
 
+### Updating the Custom Bundle
+
+This fork bundles a custom version of codegraph with GDScript support built from
+an external source repo.
+
+| Detail | Value |
+|--------|-------|
+| **Source repo** | `/Users/nazgul/Documents/Projects/Sources/Misc/codegraph` |
+| **Bundle root** | `codegraph/` (repo root) |
+| **Launcher** | `codegraph/bin/codegraph` — resolves symlinks, runs `node --liftoff-only "$DIR/lib/dist/bin/codegraph.js"` |
+| **Built output** | `codegraph/lib/` — gitignored, contains `dist/`, `node_modules/`, `package.json` |
+
+To update the bundle after making changes in the source repo:
+
+```bash
+# 1. Build the source project
+cd /Users/nazgul/Documents/Projects/Sources/Misc/codegraph
+npm ci
+npm run build
+
+# 2. Replace the bundle in this repo
+cd /Users/nazgul/Documents/Projects/Sources/Misc/DeepSeek-Reasonix
+rm -rf codegraph/lib
+cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/dist   codegraph/lib/dist
+cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/node_modules codegraph/lib/node_modules
+cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package.json     codegraph/lib/package.json
+cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package-lock.json codegraph/lib/package-lock.json
+```
+
+The launcher resolves `$DIR` relative to its own symlink-resolved location, so
+the `codegraph/lib/dist/bin/codegraph.js` path is always correct regardless of
+how the launcher is invoked.
+
 ---
 
 ## 3. Per-Agent MCP Scoping
