@@ -277,7 +277,9 @@ type chatTUI struct {
 	// current in the picker.
 	buildController func(ref string, carry []provider.Message, resumePath string) (*control.Controller, error)
 	modelRef        string
-	effortLevel     string // "" when the current provider/model has no configurable effort
+	modelRefs       []string // cached model refs for slash autocomplete (avoids config.Load() on every keystroke)
+	providerNames   []string // cached provider names for slash autocomplete (avoids config.Load() on every keystroke)
+	effortLevel     string   // "" when the current provider/model has no configurable effort
 
 	// outputStyle is the active output-style name (config agent.output_style),
 	// shown as the current entry in the /output-style listing. "" = default.

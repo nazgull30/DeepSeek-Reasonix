@@ -194,11 +194,19 @@ func (m *chatTUI) slashArgData() control.ArgData {
 	if parts := strings.SplitN(m.modelRef, "/", 2); len(parts) == 2 {
 		curProvider = parts[0]
 	}
+	mr := m.modelRefs
+	if mr == nil {
+		mr = modelRefs()
+	}
+	pn := m.providerNames
+	if pn == nil {
+		pn = providerNames()
+	}
 	data := control.ArgData{
 		Skills:          m.skills,
-		ModelRefs:       modelRefs(),
+		ModelRefs:       mr,
 		CurrentModel:    m.modelRef,
-		ProviderNames:   providerNames(),
+		ProviderNames:   pn,
 		CurrentProvider: curProvider,
 	}
 	if m.ctrl != nil {
