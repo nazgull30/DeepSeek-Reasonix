@@ -129,6 +129,20 @@ func modelRefs() []string {
 	if err != nil {
 		return nil
 	}
+	return modelRefsFrom(cfg)
+}
+
+// providerNames returns the names of configured providers for slash completion.
+func providerNames() []string {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
+	return providerNamesFrom(cfg)
+}
+
+// modelRefsFrom computes model references from an already-loaded config.
+func modelRefsFrom(cfg *config.Config) []string {
 	var out []string
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
@@ -142,12 +156,8 @@ func modelRefs() []string {
 	return out
 }
 
-// providerNames returns the names of configured providers for slash completion.
-func providerNames() []string {
-	cfg, err := config.Load()
-	if err != nil {
-		return nil
-	}
+// providerNamesFrom computes provider names from an already-loaded config.
+func providerNamesFrom(cfg *config.Config) []string {
 	var out []string
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
