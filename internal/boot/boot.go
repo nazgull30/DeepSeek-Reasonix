@@ -811,7 +811,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			if continueFrom != "" || forkFrom != "" {
 				return "", fmt.Errorf("continue_from/fork_from require a persisted session; none is active in this run")
 			}
-			run = agent.EphemeralSubagentRun(sk.Body)
+			run = agent.EphemeralSubagentRun(memory.Compose(sk.Body, mem))
 		} else {
 			identityModel, identityEffort := subagentIdentity(modelRef, effortRef)
 			spec := agent.SubagentSpec{
@@ -820,7 +820,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				WorkspaceRoot:    root,
 				ParentSession:    parentSession,
 				ParentToolCallID: parentID,
-				SystemPrompt:     sk.Body,
+				SystemPrompt:     memory.Compose(sk.Body, mem),
 				Registry:         subReg,
 				Model:            identityModel,
 				Effort:           identityEffort,
