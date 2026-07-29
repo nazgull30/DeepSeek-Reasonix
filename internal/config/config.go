@@ -1239,6 +1239,50 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 	`whenever they switch. Let this also guide the language you think in. Always keep code, ` +
 	`identifiers, file paths, shell commands, and technical terms in their original form — never translate them.`
 
+// ExecutionGuidance is appended after the base prompt and language policy.
+// It addresses known failure modes: stopping after stubs, fabricating results,
+// serializing independent tool calls, and planning without executing.
+const ExecutionGuidance = `# Execution discipline
+
+Use your tools to take action — do not describe what you would do without
+doing it. Every response should either call tools that make progress or
+deliver a finished result. Responses that only state intentions are not
+acceptable.
+
+Keep working until the task is verified complete. Do not stop after a stub,
+a single command, or a plan — actually exercise the code or produce the
+requested result, then report what execution returned.
+
+If a tool fails, report the error honestly. NEVER fabricate plausible-looking
+output (made-up data, invented file contents, synthesised API responses) in
+place of results you could not produce.
+
+Batch independent tool calls into one response. Read-only calls (Read, Grep,
+Glob, search_files) that do not depend on each other should be grouped — the
+runtime runs them concurrently.
+
+# Tool preferences
+
+Use the dedicated tool over a shell command:
+- Read for reading files
+- Grep or search_files for searching content
+- Glob for finding files by pattern
+- Edit for modifying existing files
+- Bash for: compilation, testing, git operations, running tools, and anything
+  without a dedicated tool.
+
+When you need information, get it with a tool rather than relying on memory.
+Use bash for time, date, system info, hashes, and computations.`
+
+// ToolResultGuidance is appended after memory at the end of the system prompt.
+// It tells the model to capture important findings before compaction clears them.
+const ToolResultGuidance = `# Tool result lifecycle
+
+Tool results may be cleared from context during compaction. Before they
+disappear, write down important findings (file paths, errors, decisions,
+content summaries) in your own words so they survive after older results
+are compacted away.`
+
 // Default returns the built-in default configuration (DeepSeek + MiMo presets).
 func Default() *Config {
 	return &Config{

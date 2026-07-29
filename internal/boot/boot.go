@@ -248,6 +248,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sysPrompt = outputstyle.Apply(sysPrompt, st)
 	}
 	sysPrompt += "\n\n" + config.LanguagePolicy
+	sysPrompt += "\n\n" + config.ExecutionGuidance
 	if tokenEconomy {
 		sysPrompt += "\n\n" + tokenEconomyPrompt
 	}
@@ -262,6 +263,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if opts.InheritProjectMemory == nil || *opts.InheritProjectMemory {
 		sysPrompt = memory.Compose(sysPrompt, mem)
 	}
+	sysPrompt += "\n\n" + config.ToolResultGuidance
 
 	// Skills: discover playbooks (built-in + project/custom/global) and fold their
 	// one-liner index into the same cache-stable prefix — names + descriptions
