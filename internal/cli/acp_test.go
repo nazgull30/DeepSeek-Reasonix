@@ -285,3 +285,55 @@ func (p *acpTestProvider) Stream(context.Context, provider.Request) (<-chan prov
 	close(ch)
 	return ch, nil
 }
+
+// TestACPFactoryWiresOrchestratorAndReleases verifies that ACP sessions get the
+// [orchestrator] child agents wired onto the main controller (so the agent can
+// delegate via agent_spawn / agent_send) and that ReleaseSession persists and
+// releases them when the session tears down.
+func TestACPFactoryWiresOrchestratorAndReleases(t *testing.T) {
+	writeOrchestratorProject(t, `
+[[orchestrator.agents]]
+name = "worker"
+model = "test-model"
+persist = true
+`)
+	t.Setenv("REASONIX_TEST_KEY_UNSET", "sk-test")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	f := &acpFactory{}
+	ctrl, err := f.NewSession(context.Background(), acp.SessionParams{Cwd: cwd, Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("acpFactory.NewSession: %v", err)
+	}
+	defer ctrl.Close()
+
+	for _, name := range []string{"agent_spawn", "agent_send", "agent_status", "agent_stats"} {
+		if _, ok := ctrl.Registry().Get(name); !ok {
+			t.Fatalf("orchestrator tool %q not registered on ACP session controller", name)
+		}
+	}
+
+	f.mu.Lock()
+	orc := f.orcs[ctrl]
+	f.mu.Unlock()
+	if orc == nil {
+		t.Fatal("acpFactory did not track the session orchestrator")
+	}
+	if got := orc.SessionDir(); got != config.SessionDir() {
+		t.Fatalf("ACP orchestrator session dir = %q, want %q", got, config.SessionDir())
+	}
+
+	f.ReleaseSession(ctrl)
+	f.mu.Lock()
+	_, tracked := f.orcs[ctrl]
+	f.mu.Unlock()
+	if tracked {
+		t.Fatal("acpFactory still tracks the controller after ReleaseSession")
+	}
+
+	f.ReleaseSession(ctrl) // releasing an untracked controller is a no-op
+}

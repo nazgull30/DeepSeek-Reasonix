@@ -8,14 +8,17 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"reasonix/internal/acp"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
+	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/netclient"
+	"reasonix/internal/orchestrator"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
@@ -52,9 +55,15 @@ func acpCommand(args []string, version string) int {
 // acpFactory builds one control.Controller per ACP session by reusing boot.Build
 // with the session cwd as WorkspaceRoot. That keeps ACP aligned with chat,
 // desktop, and serve assembly while still adding the host-supplied MCP servers
-// for this session only.
+// for this session only. It also wires the [orchestrator] child agents onto the
+// main controller so the agent can delegate via agent_spawn / agent_send, and
+// tracks the per-controller orchestrator so the service can release child
+// sessions when the ACP session tears down.
 type acpFactory struct {
 	model string
+
+	mu   sync.Mutex
+	orcs map[*control.Controller]*orchestrator.Orchestrator
 }
 
 func (f *acpFactory) SessionDir() string {
@@ -73,7 +82,7 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	if root != "" && !filepath.IsAbs(root) {
 		return nil, fmt.Errorf("session cwd must be an absolute path: %s", root)
 	}
-	return boot.Build(ctx, boot.Options{
+	ctrl, err := boot.Build(ctx, boot.Options{
 		Model:                    firstNonEmpty(p.Model, f.model),
 		RequireKey:               true,
 		Sink:                     p.Sink,
@@ -83,6 +92,46 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 		ExtraPlugins:             p.MCPServers,
 		CleanupPendingReconciler: acp.ReconcileCleanupPending,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Wire [orchestrator] child agents so the ACP agent can delegate via
+	// agent_spawn / agent_send. Children are rooted at the session cwd (the
+	// host may run the process far from the project) and persist their
+	// transcripts next to the ACP session sidecars. Child agent events go to
+	// event.Discard: the delegation result already returns through the
+	// agent_spawn / agent_send tool_call_update, so streaming child tool
+	// activity or approvals across the wire would only duplicate and confuse
+	// the host.
+	cfg, _ := config.LoadForRoot(root)
+	orc := wireOrchestrator(ctx, cfg, ctrl, event.Discard, 0, root, config.SessionDir())
+	if orc != nil {
+		f.mu.Lock()
+		if f.orcs == nil {
+			f.orcs = make(map[*control.Controller]*orchestrator.Orchestrator)
+		}
+		f.orcs[ctrl] = orc
+		f.mu.Unlock()
+	}
+	return ctrl, nil
+}
+
+// ReleaseSession implements acp.SessionReleaser. It persists and closes the
+// orchestrator wired for a controller when its ACP session is torn down
+// (session/close, session/delete, connection end, or a model/effort rebuild).
+func (f *acpFactory) ReleaseSession(ctrl *control.Controller) {
+	f.mu.Lock()
+	orc := f.orcs[ctrl]
+	delete(f.orcs, ctrl)
+	f.mu.Unlock()
+	if orc == nil {
+		return
+	}
+	if err := orc.SaveSessions(config.SessionDir()); err != nil {
+		fmt.Fprintln(os.Stderr, "orchestrator: save sessions:", err)
+	}
+	orc.Close()
 }
 
 func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigStateParams) (acp.SessionConfigState, error) {

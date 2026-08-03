@@ -135,6 +135,25 @@ func (f *teardownFactory) lastManager(t *testing.T) *jobs.Manager {
 	return f.manager
 }
 
+// releaseFactory records every controller the service hands back via
+// ReleaseSession, so tests can assert the SessionReleaser hook fires on each
+// teardown path.
+type releaseFactory struct {
+	released chan *control.Controller
+}
+
+func (f *releaseFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	runner := &fakeRunner{
+		sink:     p.Sink,
+		behavior: func(context.Context, event.Sink, string) error { return nil },
+	}
+	return control.New(control.Options{Runner: runner, Sink: p.Sink}), nil
+}
+
+func (f *releaseFactory) ReleaseSession(ctrl *control.Controller) {
+	f.released <- ctrl
+}
+
 func (f *configurableFactory) SessionConfigState(_ context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
 	model := strings.TrimSpace(p.Model)
 	if model == "" {
@@ -908,6 +927,66 @@ func TestServeSessionClose(t *testing.T) {
 	if promptResp.Error == nil || !strings.Contains(promptResp.Error.Message, "unknown session") {
 		t.Fatalf("prompt after close error = %+v, want unknown session", promptResp.Error)
 	}
+}
+
+func nextRelease(t *testing.T, factory *releaseFactory) *control.Controller {
+	t.Helper()
+	select {
+	case ctrl := <-factory.released:
+		if ctrl == nil {
+			t.Fatal("ReleaseSession called with nil controller")
+		}
+		return ctrl
+	case <-time.After(2 * time.Second):
+		t.Fatal("teardown did not release the session controller")
+		return nil
+	}
+}
+
+func TestServeReleasesSessionOnCloseAndEOF(t *testing.T) {
+	factory := &releaseFactory{released: make(chan *control.Controller, 8)}
+	client, stop := startServer(t, factory)
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp1 := client.call(t, "session/new", SessionNewParams{})
+	var nr1 SessionNewResult
+	if err := json.Unmarshal(newResp1.Result, &nr1); err != nil || nr1.SessionID == "" {
+		t.Fatalf("session/new #1: %v (%q)", err, nr1.SessionID)
+	}
+	newResp2 := client.call(t, "session/new", SessionNewParams{})
+	var nr2 SessionNewResult
+	if err := json.Unmarshal(newResp2.Result, &nr2); err != nil || nr2.SessionID == "" {
+		t.Fatalf("session/new #2: %v (%q)", err, nr2.SessionID)
+	}
+
+	closeResp := client.call(t, "session/close", SessionCloseParams{SessionID: nr1.SessionID})
+	if closeResp.Error != nil {
+		t.Fatalf("session/close errored: %+v", closeResp.Error)
+	}
+	nextRelease(t, factory)
+
+	// EOF teardown releases the remaining session.
+	stop()
+	nextRelease(t, factory)
+}
+
+func TestServeReleasesSessionOnDelete(t *testing.T) {
+	factory := &releaseFactory{released: make(chan *control.Controller, 8)}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp := client.call(t, "session/new", SessionNewParams{})
+	var nr SessionNewResult
+	if err := json.Unmarshal(newResp.Result, &nr); err != nil || nr.SessionID == "" {
+		t.Fatalf("session/new: %v (%q)", err, nr.SessionID)
+	}
+
+	delResp := client.call(t, "session/delete", SessionDeleteParams{SessionID: nr.SessionID})
+	if delResp.Error != nil {
+		t.Fatalf("session/delete errored: %+v", delResp.Error)
+	}
+	nextRelease(t, factory)
 }
 
 func TestSessionDeleteWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
