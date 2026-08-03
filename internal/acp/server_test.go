@@ -205,6 +205,58 @@ func (f *configurableFactory) buildCount() int {
 	return len(f.builds)
 }
 
+// approvalFactory advertises a tool_approval config option so tests can drive
+// the session's live approval posture over session/set_config_option. Its
+// controllers keep the real control.Controller mode state.
+type approvalFactory struct {
+	mu    sync.Mutex
+	ctrls []*control.Controller
+}
+
+func (f *approvalFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	runner := &fakeRunner{
+		sink: p.Sink,
+		behavior: func(ctx context.Context, sink event.Sink, input string) error {
+			sink.Emit(event.Event{Kind: event.Text, Text: input})
+			return nil
+		},
+	}
+	ctrl := control.New(control.Options{Runner: runner, Sink: p.Sink})
+	f.mu.Lock()
+	f.ctrls = append(f.ctrls, ctrl)
+	f.mu.Unlock()
+	return ctrl, nil
+}
+
+func (f *approvalFactory) ctrlAt(t *testing.T, idx int) *control.Controller {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.ctrls) <= idx {
+		t.Fatalf("ctrls = %d, want index %d", len(f.ctrls), idx)
+	}
+	return f.ctrls[idx]
+}
+
+func (f *approvalFactory) SessionConfigState(_ context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
+	return SessionConfigState{
+		Model:          "fast",
+		EffortOverride: cloneStringPtr(p.EffortOverride),
+		Models: &SessionModelState{
+			AvailableModels: []ModelInfo{{ModelID: "fast", Name: "Fast"}},
+			CurrentModelID:  "fast",
+		},
+		ConfigOptions: []SessionConfigOption{
+			{ID: "model", Name: "Model", Category: "model", Type: "select", CurrentValue: "fast",
+				Options: []SessionConfigSelectOption{{Value: "fast", Name: "Fast"}}},
+			{ID: "tool_approval", Name: "Tool approval", Category: "tool_approval", Type: "select", CurrentValue: "ask",
+				Options: []SessionConfigSelectOption{
+					{Value: "ask", Name: "Ask"}, {Value: "auto", Name: "Auto"}, {Value: "yolo", Name: "YOLO"},
+				}},
+		},
+	}, nil
+}
+
 func (f *configurableFactory) hookRunner() *hook.Runner {
 	hooks := []hook.ResolvedHook{
 		{HookConfig: hook.HookConfig{Command: "session-start"}, Event: hook.SessionStart},
@@ -583,6 +635,62 @@ func TestServeSessionConfigSwitchesModelAndEffort(t *testing.T) {
 	}
 	if got := factory.buildAt(t, 3).Model; got != "fast" {
 		t.Fatalf("legacy set_model build model = %q, want fast", got)
+	}
+}
+
+func TestServeSwitchToolApproval(t *testing.T) {
+	factory := &approvalFactory{}
+	client, stop := startServer(t, factory)
+	defer stop()
+
+	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
+	newResp := client.call(t, "session/new", SessionNewParams{Cwd: t.TempDir()})
+	var nr SessionNewResult
+	if err := json.Unmarshal(newResp.Result, &nr); err != nil {
+		t.Fatalf("session/new result: %v", err)
+	}
+	opt, ok := findConfigOption(nr.ConfigOptions, "tool_approval")
+	if !ok || opt.CurrentValue != "ask" {
+		t.Fatalf("tool_approval at new = %+v, want current ask", opt)
+	}
+	ctrl := factory.ctrlAt(t, 0)
+	if got := ctrl.ToolApprovalMode(); got != "ask" {
+		t.Fatalf("initial controller mode = %q, want ask", got)
+	}
+
+	setResp := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+		SessionID: nr.SessionID,
+		ConfigID:  "tool_approval",
+		Value:     "yolo",
+	})
+	var set SetSessionConfigOptionResult
+	if err := json.Unmarshal(setResp.Result, &set); err != nil {
+		t.Fatalf("set tool_approval result: %v", err)
+	}
+	opt, _ = findConfigOption(set.ConfigOptions, "tool_approval")
+	if opt.CurrentValue != "yolo" {
+		t.Fatalf("tool_approval after switch = %q, want yolo", opt.CurrentValue)
+	}
+	if got := ctrl.ToolApprovalMode(); got != "yolo" {
+		t.Fatalf("controller mode after switch = %q, want yolo", got)
+	}
+
+	bad := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+		SessionID: nr.SessionID,
+		ConfigID:  "tool_approval",
+		Value:     "nope",
+	})
+	if bad.Error == nil {
+		t.Fatalf("invalid tool_approval value accepted, want error")
+	}
+
+	unk := client.call(t, "session/set_config_option", SetSessionConfigOptionParams{
+		SessionID: nr.SessionID,
+		ConfigID:  "nope",
+		Value:     "yolo",
+	})
+	if unk.Error == nil {
+		t.Fatalf("unknown config option accepted, want error")
 	}
 }
 

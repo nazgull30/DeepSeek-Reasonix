@@ -344,6 +344,8 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 	s.mu.Unlock()
 	s.sendAvailableCommands(sess)
 
+	stampToolApproval(&cfgState, ctrl.ToolApprovalMode())
+
 	return SessionNewResult{
 		SessionID:     id,
 		Models:        cfgState.Models,
@@ -499,6 +501,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if replay {
 		sink.replay(ctrl.History())
 	}
+	stampToolApproval(&cfgState, ctrl.ToolApprovalMode())
 	return cfgState, nil
 }
 
@@ -563,7 +566,7 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 }
 
 // sessionSetConfigOption applies ACP's generic session-level selector. Reasonix
-// currently exposes model and reasoning-effort selectors through this path.
+// exposes model, reasoning-effort, and tool-approval selectors through this path.
 func (s *service) sessionSetConfigOption(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p SetSessionConfigOptionParams
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -591,6 +594,8 @@ func (s *service) sessionSetConfigOption(ctx context.Context, raw json.RawMessag
 		next, err = s.switchSessionModel(ctx, sess, p.Value)
 	case "thought_level":
 		next, err = s.switchSessionEffort(ctx, sess, p.Value)
+	case "tool_approval":
+		next, err = s.switchToolApproval(ctx, sess, p.Value)
 	default:
 		err = &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: unsupported config option " + option.ID}
 	}
@@ -648,6 +653,35 @@ func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, eff
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
+}
+
+// switchToolApproval flips the session's live tool-approval posture in place
+// (ask|auto|yolo). Unlike model/effort it needs no rebuild: the controller
+// re-installs its interactive gate on the fly and returns the refreshed config
+// state so the host sees the new CurrentValue.
+func (s *service) switchToolApproval(ctx context.Context, sess *acpSession, value string) (SessionConfigState, error) {
+	mode := control.NormalizeToolApprovalMode(value)
+	sess.ctrl.SetToolApprovalMode(mode)
+	params := sess.configStateParams()
+	params.EffortOverride = cloneStringPtr(sess.effortOverride)
+	cfgState, err := s.sessionConfigState(ctx, params)
+	if err != nil {
+		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: "session/set_config_option: " + err.Error()}
+	}
+	stampToolApproval(&cfgState, sess.ctrl.ToolApprovalMode())
+	return cfgState, nil
+}
+
+// stampToolApproval rewrites the tool_approval option's CurrentValue to live.
+// It's a no-op when the option isn't advertised, so it's safe on any config
+// state that this package builds.
+func stampToolApproval(cfgState *SessionConfigState, live string) {
+	for i := range cfgState.ConfigOptions {
+		if cfgState.ConfigOptions[i].ID == "tool_approval" {
+			cfgState.ConfigOptions[i].CurrentValue = control.NormalizeToolApprovalMode(live)
+			return
+		}
+	}
 }
 
 func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState SessionConfigState) error {

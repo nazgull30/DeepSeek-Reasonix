@@ -36,6 +36,7 @@ import (
 func acpCommand(args []string, version string) int {
 	fs := flag.NewFlagSet("acp", flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
+	toolApprovalMode := fs.String("tool-approval-mode", "", "default tool approval posture: ask|auto|yolo (default: config agent.tool_approval_mode)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -43,7 +44,7 @@ func acpCommand(args []string, version string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	factory := &acpFactory{model: *model}
+	factory := &acpFactory{model: *model, toolApprovalMode: normalizeACPApprovalMode(*toolApprovalMode)}
 	info := acp.AgentInfo{Name: "reasonix", Version: version}
 	if err := acp.Serve(ctx, os.Stdin, os.Stdout, factory, info); err != nil {
 		fmt.Fprintln(os.Stderr, i18n.M.ErrorPrefix, err)
@@ -61,9 +62,39 @@ func acpCommand(args []string, version string) int {
 // sessions when the ACP session tears down.
 type acpFactory struct {
 	model string
+	// toolApprovalMode is the launch-time default tool approval posture for
+	// every session (from `reasonix acp -tool-approval-mode`). Empty means the
+	// per-root config `[agent] tool_approval_mode` (or ask) decides.
+	toolApprovalMode string
 
 	mu   sync.Mutex
 	orcs map[*control.Controller]*orchestrator.Orchestrator
+}
+
+// effectiveToolApprovalMode resolves the default tool approval posture for a
+// session rooted at root: the launch flag wins, then the project config's
+// [agent] tool_approval_mode, then ask. Returns one of the normalized modes.
+func (f *acpFactory) effectiveToolApprovalMode(root string) string {
+	mode := f.toolApprovalMode
+	if mode == "" {
+		if cfg, err := config.LoadForRoot(root); err == nil {
+			mode = cfg.Agent.ToolApprovalMode
+		}
+	}
+	return normalizeACPApprovalMode(mode)
+}
+
+// normalizeACPApprovalMode maps a tool-approval value to ask|auto|yolo, so
+// ACP session options and the config/flag default share one spelling.
+func normalizeACPApprovalMode(mode string) string {
+	switch control.NormalizeToolApprovalMode(mode) {
+	case control.ToolApprovalAuto:
+		return control.ToolApprovalAuto
+	case control.ToolApprovalYolo:
+		return control.ToolApprovalYolo
+	default:
+		return control.ToolApprovalAsk
+	}
 }
 
 func (f *acpFactory) SessionDir() string {
@@ -95,6 +126,13 @@ func (f *acpFactory) NewSession(ctx context.Context, p acp.SessionParams) (*cont
 	if err != nil {
 		return nil, err
 	}
+
+	// Apply the launch/config default approval posture before the service calls
+	// EnableInteractiveApproval, so the interactive gate is built already in
+	// ask|auto|yolo mode (newInteractiveGate reads the controller's current
+	// mode). yolo/auto auto-allows tool gates; ask questions and plan approval
+	// still round-trip to the host.
+	ctrl.SetToolApprovalMode(f.effectiveToolApprovalMode(root))
 
 	// Wire [orchestrator] child agents so the ACP agent can delegate via
 	// agent_spawn / agent_send. Children are rooted at the session cwd (the
@@ -224,6 +262,19 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		effortOverride = &cleared
 	}
 
+	// Advertise the session tool-approval posture so hosts can flip ask|auto|yolo
+	// at runtime via session/set_config_option. The launch flag / [agent]
+	// tool_approval_mode default is the starting CurrentValue; the service stamps
+	// it with the live controller value after a switch.
+	options = append(options, acp.SessionConfigOption{
+		ID:           "tool_approval",
+		Name:         "Tool approval",
+		Category:     "tool_approval",
+		Type:         "select",
+		CurrentValue: normalizeACPApprovalMode(firstNonEmpty(f.toolApprovalMode, cfg.Agent.ToolApprovalMode)),
+		Options:      acpToolApprovalOptions(),
+	})
+
 	return acp.SessionConfigState{
 		Model:          currentModel,
 		EffortOverride: effortOverride,
@@ -233,6 +284,14 @@ func (f *acpFactory) SessionConfigState(_ context.Context, p acp.SessionConfigSt
 		},
 		ConfigOptions: options,
 	}, nil
+}
+
+func acpToolApprovalOptions() []acp.SessionConfigSelectOption {
+	return []acp.SessionConfigSelectOption{
+		{Value: control.ToolApprovalAsk, Name: "Ask"},
+		{Value: control.ToolApprovalAuto, Name: "Auto"},
+		{Value: control.ToolApprovalYolo, Name: "YOLO"},
+	}
 }
 
 func acpBuiltinTools(cfg *config.Config, cwd string, writeRoots []string) []tool.Tool {

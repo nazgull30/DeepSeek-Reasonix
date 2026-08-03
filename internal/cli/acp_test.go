@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/acp"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -108,6 +109,75 @@ api_key_env = "REASONIX_TEST_KEY"
 		}
 	}
 	t.Fatalf("ACP session did not load project command from cwd; commands=%v", ctrl.Commands())
+}
+
+// TestACPFactoryAppliesToolApprovalMode verifies the ACP session default tool
+// approval posture: the launch flag wins over the project [agent]
+// tool_approval_mode, which wins over ask.
+func TestACPFactoryAppliesToolApprovalMode(t *testing.T) {
+	isolateCLIConfigHome(t)
+	t.Setenv("REASONIX_TEST_KEY", "test-key")
+
+	writeACPProject := func(t *testing.T, agentLine string) string {
+		t.Helper()
+		project := t.TempDir()
+		body := `
+default_model = "local"
+
+[[providers]]
+name = "local"
+kind = "acp-test-provider"
+base_url = "http://example.invalid"
+model = "fake-model"
+api_key_env = "REASONIX_TEST_KEY"
+`
+		if agentLine != "" {
+			body += "\n[agent]\n" + agentLine + "\n"
+		}
+		if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return project
+	}
+
+	newSessionCtrl := func(t *testing.T, f *acpFactory, project string) *control.Controller {
+		t.Helper()
+		ctrl, err := f.NewSession(context.Background(), acp.SessionParams{Cwd: project, Sink: event.Discard})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { ctrl.Close() })
+		return ctrl
+	}
+
+	// Config default wins when no flag is set.
+	project := writeACPProject(t, `tool_approval_mode = "yolo"`)
+	f := &acpFactory{}
+	ctrl := newSessionCtrl(t, f, project)
+	if got := ctrl.ToolApprovalMode(); got != "yolo" {
+		t.Fatalf("config-default mode = %q, want yolo", got)
+	}
+	if got := f.effectiveToolApprovalMode(project); got != "yolo" {
+		t.Fatalf("effectiveToolApprovalMode = %q, want yolo", got)
+	}
+
+	// Launch flag wins over the config default.
+	fFlag := &acpFactory{toolApprovalMode: "auto"}
+	ctrlFlag := newSessionCtrl(t, fFlag, project)
+	if got := ctrlFlag.ToolApprovalMode(); got != "auto" {
+		t.Fatalf("flag mode = %q, want auto", got)
+	}
+	if got := fFlag.effectiveToolApprovalMode(project); got != "auto" {
+		t.Fatalf("flag effectiveToolApprovalMode = %q, want auto", got)
+	}
+
+	// No flag and no config → ask.
+	plain := writeACPProject(t, "")
+	fPlain := &acpFactory{}
+	ctrlPlain := newSessionCtrl(t, fPlain, plain)
+	if got := ctrlPlain.ToolApprovalMode(); got != "ask" {
+		t.Fatalf("default mode = %q, want ask", got)
+	}
 }
 
 func TestACPFactoryClearsEffortOverrideForUnsupportedModel(t *testing.T) {
