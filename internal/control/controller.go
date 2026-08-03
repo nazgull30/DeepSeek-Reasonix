@@ -3006,7 +3006,7 @@ func (c *Controller) ConnectMCPServer(e config.PluginEntry) (int, error) {
 
 func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
 	exp := e.ExpandedPlugin()
-	return c.connectMCPSpec(plugin.ApplyKnownOverrides(plugin.Spec{
+	return c.connectMCPSpec(plugin.ApplyKnownReadOnlyOverrides(plugin.Spec{
 		Name:    exp.Name,
 		Type:    exp.Type,
 		Command: exp.Command,
@@ -3014,7 +3014,7 @@ func (c *Controller) connectMCPServer(e config.PluginEntry) (int, error) {
 		Env:     exp.Env,
 		URL:     exp.URL,
 		Headers: exp.Headers,
-	}, c.WorkspaceRoot()))
+	}))
 }
 
 func (c *Controller) connectMCPSpec(s plugin.Spec) (int, error) {

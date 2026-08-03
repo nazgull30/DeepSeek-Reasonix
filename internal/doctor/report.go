@@ -11,7 +11,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/clipboard"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/config"
 	"reasonix/internal/netclient"
 	"reasonix/internal/sandbox"
@@ -30,7 +29,6 @@ type Report struct {
 	Config     ConfigReport     `json:"config"`
 	Providers  []ProviderReport `json:"providers"`
 	Plugins    []PluginReport   `json:"plugins,omitempty"`
-	Codegraph  CodegraphReport  `json:"codegraph"`
 	LSP        LSPReport        `json:"lsp"`
 	Sessions   SessionsReport   `json:"sessions"`
 	Sandbox    SandboxReport    `json:"sandbox"`
@@ -63,15 +61,6 @@ type PluginReport struct {
 	Transport string `json:"transport"`
 	AutoStart bool   `json:"auto_start"`
 	Target    string `json:"target,omitempty"`
-}
-
-type CodegraphReport struct {
-	Enabled     bool   `json:"enabled"`
-	AutoInstall bool   `json:"auto_install"`
-	Version     string `json:"version"`
-	CacheDir    string `json:"cache_dir,omitempty"`
-	Resolved    bool   `json:"resolved"`
-	Path        string `json:"path,omitempty"`
 }
 
 type LSPReport struct {
@@ -175,10 +164,6 @@ func Collect(opts Options) Report {
 	}
 	report.Sessions.Dir = redactHome(report.Sessions.Dir)
 	report.Clipboard = collectClipboard()
-	if p, ok := codegraph.Resolve(cfg.Codegraph.Path); ok {
-		report.Codegraph.Resolved = true
-		report.Codegraph.Path = redactHome(p)
-	}
 	for i := range cfg.Providers {
 		p := cfg.Providers[i]
 		models := p.ModelList()

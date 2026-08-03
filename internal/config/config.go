@@ -57,7 +57,6 @@ type Config struct {
 	Plugins          []PluginEntry       `toml:"plugins"`
 	Skills           SkillsConfig        `toml:"skills"`
 	Orchestrator     OrchestratorConfig  `toml:"orchestrator"`
-	Codegraph        CodegraphConfig     `toml:"codegraph"`
 	BuiltInMCP       BuiltInMCPConfig    `toml:"builtin_mcp"`
 	Statusline       StatuslineConfig    `toml:"statusline"`
 	LSP              LSPConfig           `toml:"lsp"`
@@ -403,24 +402,6 @@ type LSPServer struct {
 // status data row. A JSON payload (model, context tokens, cwd) is fed on stdin.
 type StatuslineConfig struct {
 	Command string `toml:"command"`
-}
-
-// CodegraphConfig enables the built-in codegraph MCP server. It is off by
-// default and requires the codegraph binary to be installed (either via
-// auto_install or the `reasonix codegraph install` command).
-type CodegraphConfig struct {
-	Enabled     bool   `toml:"enabled"`
-	AutoInstall bool   `toml:"auto_install"`
-	Path        string `toml:"path"`
-	Tier        string `toml:"tier"`
-}
-
-func (c CodegraphConfig) ShouldAutoStart() bool {
-	return c.Enabled
-}
-
-func (c CodegraphConfig) ResolvedTier() string {
-	return "background"
 }
 
 // BuiltInMCPConfig controls Reasonix-shipped MCP servers that require no user

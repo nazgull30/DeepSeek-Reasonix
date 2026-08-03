@@ -158,6 +158,16 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # command = "reasonix-plugin-example"
 # # Enabled MCP servers connect automatically in the background after session
 # # start. Use /mcp or the desktop MCP panel to refresh, reconnect, or disable.
+#
+# CodeGraph symbol-graph MCP server (run it yourself; no bundle is shipped).
+# Pin PATH to a Node version codegraph supports (e.g. Homebrew node@22) and
+# ${VAR} refs expand from the environment. The first run creates .codegraph/
+# via `codegraph init`; serve --mcp indexes on connect and watches for changes.
+# [[plugins]]
+# name    = "codegraph"
+# command = "/opt/homebrew/bin/codegraph"
+# args    = ["serve", "--mcp"]
+# env     = { PATH = "/opt/homebrew/opt/node@22/bin:${PATH}" }
 
 # Bot gateway: multi-channel IM bot for QQ, Feishu, and WeChat.
 # Start with `reasonix bot start --channels qq,feishu,weixin`.

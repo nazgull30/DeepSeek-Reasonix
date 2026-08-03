@@ -112,9 +112,6 @@ func Run(args []string, version string) int {
 	case "review":
 		configureCLIThemeFromConfigNoProbe()
 		return reviewCommand(rest)
-	case "codegraph":
-		configureCLIThemeFromConfigNoProbe()
-		return codegraphCommand(rest)
 	case "bot":
 		configureCLIThemeFromConfigNoProbe()
 		return botCommand(rest, version)
@@ -147,7 +144,7 @@ func isDefaultInteractiveFlag(arg string) bool {
 
 func shouldMigrateLegacyConfigForCLI(cmd string) bool {
 	switch cmd {
-	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "doctor", "codegraph", "bot", "upgrade", "update":
+	case "", "run", "chat", "code", "serve", "setup", "config", "init", "acp", "mcp", "doctor", "bot", "upgrade", "update":
 		return true
 	default:
 		return false
@@ -543,7 +540,6 @@ func chatREPL(args []string) int {
 				Sink:                  agentSink,
 				SystemPrompt:          entryPrompt,
 				ToolDenylist:          denylist,
-				SkipCodegraph:         true,
 				InheritProjectMemory:  entry.InheritProjectMemory,
 			})
 			if cerr != nil {

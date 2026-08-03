@@ -57,7 +57,6 @@ All commands support tab-completion (`/agent_<TAB>`) and help text:
       system_prompt = "You are a solution architect..."
       verbose = true
       tools = ["bash", "read_file", "glob", "grep"]
-      skip_codegraph = true
 ```
 
 Key fields per child:
@@ -65,7 +64,6 @@ Key fields per child:
 - `system_prompt` — Custom system prompt
 - `verbose` — Show full transcript in parent view (default: false)
 - `tools` — Optional tool allowlist
-- `skip_codegraph` — Skip CodeGraph install for this child (avoids N concurrent downloads)
 
 ### Automatic Session Persistence
 
@@ -76,77 +74,51 @@ immediately snapshot.
 
 ---
 
-## 2. CodeGraph — Bundled Integration
+## 2. CodeGraph — External MCP Integration
 
-**Package:** `internal/codegraph/`
-**CLI:** `internal/cli/codegraph.go`
+CodeGraph is no longer bundled. Reasonix treats it as a regular `[[plugins]]` MCP
+server; you install and run it yourself (e.g. from a Homebrew/global install of
+`@colbymchenry/codegraph`), pinning a Node version codegraph supports.
 
-Upstream v1.10.0 removed the bundled CodeGraph code-intelligence server. This
-fork keeps it bundled and adds management commands.
+```toml
+[[plugins]]
+name    = "codegraph"
+command = "/opt/homebrew/bin/codegraph"
+args    = ["serve", "--mcp"]
+env     = { PATH = "/opt/homebrew/opt/node@22/bin:${PATH}" }
+```
 
-### CLI Commands (`reasonix codegraph`)
-
-| Subcommand | Description |
-|------------|-------------|
-| `install` | Download and install the CodeGraph binary |
-| `sync` | Forward command to the CodeGraph sync subprocess |
-| `index` | Forward command to the CodeGraph index subprocess |
-| `status` | Show CodeGraph status (enabled, version, path, cache) |
-| `help` | Print usage |
+`${VAR}` references expand from the environment (see `internal/config/expand.go`).
+Enabled `[[plugins]]` servers connect automatically in the background after
+session start; `serve --mcp` indexes on connect and keeps the index fresh with
+its file watcher.
 
 ### Key Changes
 
 | Change | Detail |
 |--------|--------|
-| **Periodic sync** | Replaced file watcher with periodic sync to reduce resource usage |
-| **Sync guarded by Initialized** | Sync only runs after CodeGraph is fully initialized |
-| **Updated checksums** | Checksums bumped for CodeGraph v1.0.1 |
-| **Download URL** | Mirror URL changed to `dl.reasonix.io`, download timeout increased to 60s |
-| **SkipCodegraph config** | Option to skip CodeGraph install per child agent |
-| **Tool registration** | CodeGraph tools registered for main agent |
+| **No bundled server** | `internal/codegraph/`, `codegraph/`, and the `reasonix codegraph` CLI are removed; upstream's `code_index` fallback tool covers the gap |
+| **First-run init** | `ensureCodeGraphInit` runs `codegraph init` in the background when no `.codegraph/` exists for a fresh project (codegraph's daemon does not create it itself) |
+| **Read-only hints** | `ApplyKnownReadOnlyOverrides` marks codegraph tools read-only for agent-scoping (kept) |
+| **Orphan reaping** | Desktop reaps `codegraph.js serve --mcp` orphans across restarts (kept) |
+| **Node pin** | Point `PATH` at a Node version codegraph supports (e.g. Homebrew `node@22`); the repo bundle previously needed a Node 24 liftoff workaround |
 
-### Configuration
+### Building / Installing the Server
 
-```toml
-[codegraph]
-enabled = true
-auto_install = true
-path = ""
-```
-
-### Updating the Custom Bundle
-
-This fork bundles a custom version of codegraph with GDScript support built from
-an external source repo.
-
-| Detail | Value |
-|--------|-------|
-| **Source repo** | `/Users/nazgul/Documents/Projects/Sources/Misc/codegraph` |
-| **Bundle root** | `codegraph/` (repo root) |
-| **Launcher** | `codegraph/bin/codegraph` — resolves symlinks, runs `node --liftoff-only "$DIR/lib/dist/bin/codegraph.js"` |
-| **Built output** | `codegraph/lib/` — gitignored, contains `dist/`, `node_modules/`, `package.json` |
-
-To update the bundle after making changes in the source repo:
+Build and install the server from its source repo, then point the plugin at the
+installed `codegraph` binary:
 
 ```bash
-# 1. Build the source project
 cd /Users/nazgul/Documents/Projects/Sources/Misc/codegraph
 npm ci
 npm run build
-
-# 2. Replace the bundle in this repo
-cd /Users/nazgul/Documents/Projects/Sources/Misc/DeepSeek-Reasonix
-rm -rf codegraph/lib
-mkdir -p codegraph/lib
-cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/dist          codegraph/lib/dist
-cp -r /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/node_modules  codegraph/lib/node_modules
-cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package.json     codegraph/lib/package.json
-cp    /Users/nazgul/Documents/Projects/Sources/Misc/codegraph/package-lock.json codegraph/lib/package-lock.json
+npm link   # or: npm install -g .
 ```
 
-The launcher resolves `$DIR` relative to its own symlink-resolved location, so
-the `codegraph/lib/dist/bin/codegraph.js` path is always correct regardless of
-how the launcher is invoked.
+The installed launcher resolves its own symlinks, so the bundled `dist/bin/codegraph.js`
+path stays correct regardless of how it is invoked. Verify the server starts:
+`codegraph serve --mcp` (or `CODEGRAPH_ALLOW_UNSAFE_NODE=1 codegraph ...` for
+runtimes codegraph doesn't whitelist).
 
 ---
 
@@ -376,12 +348,12 @@ international billing model:
 - deepseek-chat: $0.27/M input, $1.10/M output
 - deepseek-reasoner: $0.55/M input, $2.18/M output (with reasoning)
 
-### Codegraph & BuiltInMCP Config Types
+### BuiltInMCP Config Type
 
 **File:** `internal/config/config.go`
 
-Added `CodegraphConfig` and `BuiltInMCPConfig` types to the configuration system
-for the bundled CodeGraph and built-in MCP features.
+Added the `BuiltInMCPConfig` type to the configuration system for the built-in
+MCP features (e.g. the time server).
 
 ### Orchestrator Agent Config
 
@@ -392,7 +364,6 @@ Added `OrchestratorAgentEntry` configuration type supporting:
 - `system_prompt` — custom system prompt per agent
 - `verbose` — transcript visibility
 - `tools` — tool allowlist
-- `skip_codegraph` — skip codegraph for this agent
 
 ---
 
@@ -407,11 +378,6 @@ Added `OrchestratorAgentEntry` configuration type supporting:
 | `internal/orchestrator/tools_test.go` | agent_spawn and agent_send tool execution |
 | `internal/orchestrator/message_test.go` | Inbox message passing |
 | `internal/agent/context_test.go` | Context breakdown computation |
-| `internal/codegraph/codegraph_test.go` | CodeGraph lifecycle, tool registration |
-| `internal/codegraph/install_test.go` | CodeGraph binary download and installation |
-| `internal/codegraph/symlink_escape_test.go` | Symlink escape prevention |
-| `internal/codegraph/steer_test.go` | CodeGraph steer/guard behavior |
-| `internal/codegraph/e2e_test.go` | End-to-end CodeGraph integration |
 | `internal/builtinmcp/time_server_test.go` | Time MCP server tools |
 | `internal/builtinmcp/builtinmcp_test.go` | Built-in MCP server registration |
 | `internal/clipboard/clipboard_test.go` | Clipboard read/write/probe |

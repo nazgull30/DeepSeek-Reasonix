@@ -75,7 +75,6 @@ type toolSourceConnector struct {
 	install   func(context.Context) (string, error)
 	webFetch  func(context.Context) (string, error)
 	lsp       func(context.Context) (string, error)
-	codegraph func(context.Context) (string, error)
 	mcp       func(context.Context, string) (string, error)
 	mcpNames  []string
 }
@@ -83,7 +82,7 @@ type toolSourceConnector struct {
 func (*toolSourceConnector) Name() string { return "connect_tool_source" }
 
 func (*toolSourceConnector) Description() string {
-	return "Token economy mode only: enable an optional tool source when the task needs it. Sources: skills, mcp, codegraph, lsp, web_fetch, install_source, task. For mcp, pass the configured server name; omit name to list servers. Newly enabled tools are available on the next model request."
+	return "Token economy mode only: enable an optional tool source when the task needs it. Sources: skills, mcp, lsp, web_fetch, install_source, task. For mcp, pass the configured server name; omit name to list servers. Newly enabled tools are available on the next model request."
 }
 
 func (*toolSourceConnector) ReadOnly() bool { return true }
@@ -132,8 +131,6 @@ func (t *toolSourceConnector) Execute(ctx context.Context, args json.RawMessage)
 		return runSourceInstaller(ctx, "web_fetch", t.webFetch)
 	case "lsp":
 		return runSourceInstaller(ctx, "lsp", t.lsp)
-	case "codegraph":
-		return runSourceInstaller(ctx, "codegraph", t.codegraph)
 	case "mcp":
 		name := strings.TrimSpace(p.Name)
 		if name == "" {
@@ -167,8 +164,6 @@ func normalizeToolSource(source string) string {
 		return "install_source"
 	case "task", "subagent", "subagents":
 		return "task"
-	case "codegraph", "cg":
-		return "codegraph"
 	default:
 		return ""
 	}
@@ -193,9 +188,6 @@ func (t *toolSourceConnector) availableSources() []string {
 	}
 	if t.task != nil {
 		out = append(out, "task")
-	}
-	if t.codegraph != nil {
-		out = append(out, "codegraph")
 	}
 	sort.Strings(out)
 	return out
