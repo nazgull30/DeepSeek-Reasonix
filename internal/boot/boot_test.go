@@ -1568,8 +1568,9 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	if i := strings.Index(sys, "\n\n# Skills"); i >= 0 {
 		base = sys[:i]
 	}
-	// The language policy is always appended at boot; strip it so this assertion
-	// is purely about whether project/ancestor memory leaked into the base.
+	// The language policy, execution guidance, and tool result guidance are always
+	// appended at boot; strip them so this assertion is purely about whether
+	// project/ancestor memory leaked into the base.
 	base = stripLanguagePolicy(base)
 	if base != "JUST THE BASE" {
 		t.Fatalf("expected untouched base prompt, got:\n%s", sys)
@@ -1616,10 +1617,23 @@ func systemMessage(msgs []provider.Message) string {
 
 func stripLanguagePolicy(s string) string {
 	s = strings.TrimSpace(s)
-	for _, policy := range []string{
+	policies := []string{
+		config.ToolResultGuidance,
+		config.ExecutionGuidance,
 		config.LanguagePolicy,
-	} {
-		s = strings.TrimSpace(strings.TrimSuffix(s, policy))
+	}
+	for {
+		changed := false
+		for _, p := range policies {
+			trimmed := strings.TrimSpace(strings.TrimSuffix(s, p))
+			if trimmed != s {
+				s = trimmed
+				changed = true
+			}
+		}
+		if !changed {
+			break
+		}
 	}
 	return s
 }
