@@ -1354,65 +1354,6 @@ model = "x"
 	}
 }
 
-func TestBuildTokenEconomyCodegraphConnectorReturnsDisabledWhenConfigOff(t *testing.T) {
-	isolateConfigHome(t)
-	dir := robustTempDir(t)
-	t.Chdir(dir)
-
-	registerBootTokenProfileTestProvider()
-	prov := testutil.NewMock("token-economy",
-		testutil.Turn{ToolCalls: []provider.ToolCall{
-			{ID: "cg-1", Name: "connect_tool_source", Arguments: `{"source":"codegraph"}`},
-		}},
-		testutil.Turn{Text: "done"},
-	)
-	setBootTokenProfileTestProvider(t, prov)
-	writeFile(t, dir, "reasonix.toml", `
-default_model = "test-model"
-
-[agent]
-system_prompt = "BASE"
-
-[codegraph]
-enabled = false
-
-[[providers]]
-name = "test-model"
-kind = "boot-token-profile-test"
-model = "x"
-`)
-
-	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	defer ctrl.Close()
-	if err := ctrl.Run(context.Background(), "use codegraph"); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	reqs := prov.Requests()
-	// Should have 2 requests (before and after connect_tool_source)
-	if len(reqs) != 2 {
-		t.Fatalf("requests = %d, want 2", len(reqs))
-	}
-	// Verify codegraph tools were NOT added (connect failed because disabled)
-	for _, name := range []string{"codegraph_context", "codegraph_search"} {
-		if requestHasTool(reqs[0], name) || requestHasTool(reqs[1], name) {
-			t.Fatalf("codegraph tools should not appear when codegraph disabled; %q found in tools=%v", name, toolSchemaNames(reqs[0].Tools))
-		}
-	}
-	// Verify error was returned to model
-	var toolErr string
-	for _, msg := range ctrl.History() {
-		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
-			toolErr = msg.Content
-		}
-	}
-	if !strings.Contains(toolErr, "disabled") {
-		t.Fatalf("codegraph source result should mention disabled, got:\n%s", toolErr)
-	}
-}
-
 func TestAddBuiltinsWithWorkspaceRootKeepsSessionTools(t *testing.T) {
 	reg := tool.NewRegistry()
 	var stderr bytes.Buffer
@@ -1935,7 +1876,6 @@ func TestBuildMigratesLegacyXDGAndProjectSessions(t *testing.T) {
 	t.Setenv("REASONIX_HOME", reasonixHome)
 
 	proj := robustTempDir(t)
-	writeFile(t, proj, "reasonix.toml", "[codegraph]\nenabled = false\n")
 
 	legacyRoot := filepath.Join(xdg, "reasonix")
 	writeFile(t, filepath.Join(legacyRoot, "sessions"), "xdg-flat.events.jsonl",
@@ -2027,26 +1967,6 @@ func TestPluginSpecsTrustKnownCodeGraphReadTools(t *testing.T) {
 	}
 }
 
-func TestPluginSpecsForRootPinsCodeGraphToWorkspace(t *testing.T) {
-	specs := PluginSpecsForRoot([]config.PluginEntry{{Name: "codegraph"}}, "/workspace")
-	if len(specs) != 1 {
-		t.Fatalf("PluginSpecsForRoot returned %d specs, want 1", len(specs))
-	}
-	if specs[0].Dir != "/workspace" {
-		t.Fatalf("codegraph Dir = %q, want workspace root", specs[0].Dir)
-	}
-}
-
-func TestPluginSpecsForRootDoesNotPinHTTPCodeGraph(t *testing.T) {
-	specs := PluginSpecsForRoot([]config.PluginEntry{{Name: "codegraph", Type: "http", URL: "https://example.com/mcp"}}, "/workspace")
-	if len(specs) != 1 {
-		t.Fatalf("PluginSpecsForRoot returned %d specs, want 1", len(specs))
-	}
-	if specs[0].Dir != "" {
-		t.Fatalf("http codegraph Dir = %q, want empty", specs[0].Dir)
-	}
-}
-
 func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
 	specs := PluginSpecs([]config.PluginEntry{{Name: "not-codegraph"}})
 	if len(specs) != 1 {
@@ -2054,6 +1974,124 @@ func TestPluginSpecsDoNotTrustCodeGraphToolsForOtherServers(t *testing.T) {
 	}
 	if specs[0].ReadOnlyToolNames["codegraph_context"] {
 		t.Fatalf("non-codegraph spec should not receive codegraph read-only overrides: %+v", specs[0].ReadOnlyToolNames)
+	}
+}
+
+func TestCodeGraphIndexableRoot(t *testing.T) {
+	cases := []struct {
+		root string
+		want bool
+	}{
+		{"", false},
+		{"/", false},
+		{"/Users/nazgul/project", true},
+	}
+	for _, tc := range cases {
+		if got := codeGraphIndexableRoot(tc.root); got != tc.want {
+			t.Fatalf("codeGraphIndexableRoot(%q) = %v, want %v", tc.root, got, tc.want)
+		}
+	}
+}
+
+func TestIsCodeGraphStdioSpec(t *testing.T) {
+	cases := []struct {
+		s    plugin.Spec
+		want bool
+	}{
+		{plugin.Spec{Name: "codegraph"}, true},
+		{plugin.Spec{Name: "CodeGraph", Type: "stdio"}, true},
+		{plugin.Spec{Name: "codegraph", Type: "http"}, false},
+		{plugin.Spec{Name: "other"}, false},
+	}
+	for _, tc := range cases {
+		if got := isCodeGraphStdioSpec(&tc.s); got != tc.want {
+			t.Fatalf("isCodeGraphStdioSpec(%+v) = %v, want %v", tc.s, got, tc.want)
+		}
+	}
+}
+
+func TestApplySpecEnvReplacesDuplicateKeys(t *testing.T) {
+	out := applySpecEnv([]string{"PATH=/usr/bin", "A=1"}, map[string]string{"PATH": "/opt/node22/bin:/usr/bin", "B": "2"})
+	got := map[string]string{}
+	for _, kv := range out {
+		k, v, _ := strings.Cut(kv, "=")
+		got[k] = v
+	}
+	if len(got) != 3 {
+		t.Fatalf("applySpecEnv returned %d keys, want 3: %v", len(got), got)
+	}
+	if got["PATH"] != "/opt/node22/bin:/usr/bin" {
+		t.Fatalf("PATH = %q, want overridden value", got["PATH"])
+	}
+	if got["A"] != "1" || got["B"] != "2" {
+		t.Fatalf("applySpecEnv dropped unrelated keys: %v", got)
+	}
+	if len(applySpecEnv([]string{"A=1"}, nil)) != 1 {
+		t.Fatalf("nil overrides should return base unchanged")
+	}
+}
+
+func TestEnsureCodeGraphInitSkipsWithoutCodeGraphSpec(t *testing.T) {
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	ensureCodeGraphInit(context.Background(), dir, event.Discard,
+		[]plugin.Spec{{Name: "other", Command: "sh"}},
+		[]plugin.Spec{{Name: "codegraph"}},
+	)
+	time.Sleep(50 * time.Millisecond)
+	if fi, err := os.Stat(filepath.Join(dir, ".codegraph")); err == nil && fi.IsDir() {
+		t.Fatal(".codegraph should not be created without a codegraph command")
+	}
+}
+
+func TestEnsureCodeGraphInitRunsInitAndNoticesFailure(t *testing.T) {
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	script := filepath.Join(dir, "fake-codegraph.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nmkdir -p \"$2/.codegraph\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failedNotice := false
+	ensureCodeGraphInit(context.Background(), dir, event.FuncSink(func(e event.Event) {
+		if strings.Contains(e.Text, "init failed") {
+			failedNotice = true
+		}
+	}), []plugin.Spec{{Name: "codegraph", Command: script}})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if fi, err := os.Stat(filepath.Join(dir, ".codegraph")); err == nil && fi.IsDir() {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, ".codegraph")); err != nil || !fi.IsDir() {
+		t.Fatalf(".codegraph not created by init: %v", err)
+	}
+	if failedNotice {
+		t.Fatal("no init-failed notice expected on success")
+	}
+
+	badDir := robustTempDir(t)
+	t.Chdir(badDir)
+	bad := filepath.Join(badDir, "fail.sh")
+	if err := os.WriteFile(bad, []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	noticed := false
+	ensureCodeGraphInit(context.Background(), badDir, event.FuncSink(func(e event.Event) {
+		if strings.Contains(e.Text, "init failed") {
+			noticed = true
+		}
+	}), []plugin.Spec{{Name: "codegraph", Command: bad}})
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !noticed {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !noticed {
+		t.Fatal("expected init-failed notice on failure")
 	}
 }
 

@@ -15,12 +15,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"reasonix/internal/agent"
-	"reasonix/internal/codegraph"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -115,10 +115,6 @@ type Options struct {
 	// with a non-empty Agents list are loaded only if this name appears in it.
 	// Plugins with an empty Agents list are always loaded (backward compatible).
 	AgentName string
-	// SkipCodegraph disables codegraph installation and plugin loading for this
-	// controller. Used for orchestrator child agents to avoid N concurrent
-	// downloads/installs when the main controller already handles it.
-	SkipCodegraph bool
 	// TokenMode selects how much optional context/tool surface this session exposes
 	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
 	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
@@ -316,11 +312,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// session starts immediately while enabled MCP servers warm up.
 	autoStartEntries := cfg.AutoStartPlugins()
 	eagerEntries, lazyEntries, bgEntries := partitionByTier(autoStartEntries)
-	extraSpecs := applyKnownPluginOverrides(opts.ExtraPlugins, root)
+	extraSpecs := applyKnownPluginOverrides(opts.ExtraPlugins)
 	onDemandMCPSpecs := map[string]plugin.Spec{}
 	onDemandMCPNames := []string{}
 	if tokenEconomy {
-		for _, spec := range append(PluginSpecsForRoot(autoStartEntries, root), extraSpecs...) {
+		for _, spec := range append(PluginSpecs(autoStartEntries), extraSpecs...) {
 			name := strings.TrimSpace(spec.Name)
 			if name == "" {
 				continue
@@ -350,10 +346,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 	}
-	// CodeGraph is a built-in server shipped with Reasonix, not a [[plugins]]
-	// entry, so it is invisible to the agent-scoping logic above. Without this
-	// entry its tools are silently dropped by registerDeferred (the process
-	// starts but nothing adds its tools to the registry).
+	// CodeGraph is configured as a [[plugins]] entry but is conventionally
+	// available to every agent (symbol-graph tools are read-only and useful in
+	// subagents); keep it allowed even when no explicit Agents list grants it.
 	agentAllowedPlugins["codegraph"] = true
 
 	// Auto-demote: any eager plugin that has been chronically slow (recent
@@ -374,118 +369,20 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	eagerEntries = kept
 
-	eagerSpecs := PluginSpecsForRoot(eagerEntries, root)
-	lazySpecs := PluginSpecsForRoot(lazyEntries, root)
-	bgSpecs := PluginSpecsForRoot(bgEntries, root)
+	eagerSpecs := PluginSpecs(eagerEntries)
+	lazySpecs := PluginSpecs(lazyEntries)
+	bgSpecs := PluginSpecs(bgEntries)
 
-	// CodeGraph is a built-in MCP server fetched on first use. When it resolves,
-	// inject it as one more stdio plugin pinned to the project root (it is
-	// cwd-aware); EnsureInit only creates .codegraph/ (fast, size-independent),
-	// serve's daemon then indexes in the background, so startup never blocks even
-	// on a large repo. When it is not yet installed, fetch it in the background
-	// (one-time, ~45MB) if auto_install is on — startup still never blocks, the
-	// tools come online next session — otherwise point the user at the explicit
-	// install command. A failed init or fetch is a notice, not fatal.
-	//
-	// CodeGraph is fixed to background startup. Legacy tier values are ignored so
-	// enabling it never blocks chat startup.
-	// Orchestrator child agents skip codegraph — the main controller handles it.
-	if cfg.Codegraph.Enabled && !opts.SkipCodegraph && !tokenEconomy {
-		bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-		switch {
-		case ok && !codegraph.IndexableRoot(root):
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text: "codegraph: project root is a filesystem root — skipped to avoid indexing the whole volume"})
-		case ok:
-			if opts.SharedHost != nil && pluginHost != nil {
-				// Shared host: add to the existing host.
-				spec := plugin.Spec{
-					Name:              "codegraph",
-					StripRawPrefix:    "codegraph_",
-					Command:           bin,
-					Args:              []string{"serve", "--mcp", "--no-watch"},
-					Dir:               root,
-					ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
-					LowPriority:       true,
-				}
-				tools, err := pluginHost.Add(ctx, spec)
-				if err != nil {
-					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-						Text: "codegraph: add to shared host failed: " + err.Error()})
-				} else {
-					for _, t := range tools {
-						reg.Add(t)
-					}
-				}
-				break
-			}
-			spec := plugin.Spec{
-				Name:              "codegraph",
-				StripRawPrefix:    "codegraph_",
-				Command:           bin,
-				Args:              []string{"serve", "--mcp", "--no-watch"},
-				Dir:               root,
-				ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
-				LowPriority:       true,
-			}
-			warm := codegraph.Initialized(root)
-			if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
-				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-					Text: "codegraph: init failed (" + err.Error() + ") — symbol-graph tools disabled this session"})
-				break
-			}
-			bgNotice := func() {
-				if !warm {
-					sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-						Text: "codegraph: preparing code-intelligence tools in the background — tools will appear when ready"})
-				}
-			}
-			bgSpecs = append(bgSpecs, spec)
-			bgNotice()
-			go func(bin, root string, warm bool) {
-				if !warm {
-					if out, err := codegraph.Index(bin, root); err != nil {
-						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-							Text: "codegraph: initial index failed (" + err.Error() + "): " + out})
-					}
-				}
-				syncOnce := func() {
-					if out, err := codegraph.Sync(bin, root); err != nil {
-						sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-							Text: "codegraph: sync failed: " + out})
-					}
-				}
-				syncOnce()
-				ticker := time.NewTicker(60 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						syncOnce()
-					}
-				}
-			}(bin, root, warm)
-		case cfg.Codegraph.AutoInstall:
-			notify := func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: msg}) }
-			notify("codegraph: fetching code-intelligence runtime in the background (one-time) — symbol-graph tools available next session")
-			codegraphClient, err := netclient.NewHTTPClient(proxySpec, netclient.TransportOptions{})
-			if err != nil {
-				notify("codegraph: install skipped (" + err.Error() + ")")
-			} else {
-				go func() {
-					if _, err := codegraph.InstallWithClient(context.WithoutCancel(ctx), codegraphClient, nil); err != nil {
-						notify("codegraph: install failed (" + err.Error() + ") — using grep/glob; retries next session")
-					} else {
-						notify("codegraph: installed — symbol-graph tools available next session")
-					}
-				}()
-			}
-		default:
-			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
-				Text: "codegraph: not installed — run `reasonix codegraph install` to enable symbol-graph tools"})
-		}
+	// CodeGraph is an external MCP server the user configures as a stdio plugin
+	// ([[plugins]] name = "codegraph"); the bundled runtime is gone. codegraph's
+	// own `serve --mcp` daemon indexes on connect and keeps the index fresh via
+	// its file watcher, so we no longer download, install, index, or sync it.
+	// The only leftover is the one-time `codegraph init <root>` that creates
+	// .codegraph/ for a fresh project — without it serve runs in a degraded
+	// no-index mode. It is fast (~100ms) and non-fatal, so it runs in the
+	// background for the main controller only (orchestrator children share it).
+	if !tokenEconomy && opts.AgentName == "" {
+		ensureCodeGraphInit(ctx, root, opts.Sink, eagerSpecs, lazySpecs, bgSpecs)
 	}
 	if !tokenEconomy {
 		eagerSpecs = append(eagerSpecs, extraSpecs...)
@@ -913,7 +810,16 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			ProjectRoot: root,
 			HTTPClient:  balanceClient,
 			ConnectMCP: func(e config.PluginEntry) (installsource.MCPConnectResult, error) {
-				spec := pluginSpecFromEntry(e, root)
+				exp := e.ExpandedPlugin()
+				spec := plugin.Spec{
+					Name:    exp.Name,
+					Type:    exp.Type,
+					Command: exp.Command,
+					Args:    exp.Args,
+					Env:     exp.Env,
+					URL:     exp.URL,
+					Headers: exp.Headers,
+				}
 				if opts.Stderr != nil {
 					spec.Stderr = opts.Stderr
 				}
@@ -1005,40 +911,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					return "LSP tools are already enabled.", nil
 				}
 				return "enabled " + strings.Join(names, ", ") + ".", nil
-			},
-			codegraph: func(context.Context) (string, error) {
-				if !cfg.Codegraph.Enabled {
-					return "", fmt.Errorf("codegraph is disabled in config")
-				}
-				bin, ok := codegraph.Resolve(cfg.Codegraph.Path)
-				if !ok {
-					return "", fmt.Errorf("codegraph is not installed")
-				}
-				if !codegraph.IndexableRoot(root) {
-					return "", fmt.Errorf("codegraph: project root is a filesystem root — skipped to avoid indexing the whole volume")
-				}
-				if err := codegraph.EnsureInit(ctx, bin, root); err != nil {
-					return "", fmt.Errorf("codegraph init: %w", err)
-				}
-				spec := plugin.Spec{
-					Name:              "codegraph",
-					StripRawPrefix:    "codegraph_",
-					Command:           bin,
-					Args:              []string{"serve", "--mcp", "--no-watch"},
-					Dir:               root,
-					ReadOnlyToolNames: codegraph.ReadOnlyToolNames(),
-					LowPriority:       true,
-				}
-				if opts.Stderr != nil {
-					spec.Stderr = opts.Stderr
-				}
-				tools, err := pluginHost.Add(ctx, spec)
-				if err != nil {
-					return "", err
-				}
-				reg.RemovePrefix(plugin.ToolPrefix(spec.Name))
-				names := addTools(reg, tools)
-				return "enabled codegraph tools: " + strings.Join(names, ", ") + ".", nil
 			},
 			mcp: func(_ context.Context, name string) (string, error) {
 				spec, ok := onDemandMCPSpecs[name]
@@ -1544,36 +1416,121 @@ func partitionByTier(entries []config.PluginEntry) (eager, lazy, bg []config.Plu
 // references. Exported so custom assemblers can connect the config's plugins
 // alongside their own (e.g. ACP's per-session MCP servers).
 func PluginSpecs(entries []config.PluginEntry) []plugin.Spec {
-	return PluginSpecsForRoot(entries, "")
-}
-
-// PluginSpecsForRoot maps configured plugin entries to plugin.Spec and applies
-// workspace-aware compatibility overrides for known cwd-sensitive servers.
-func PluginSpecsForRoot(entries []config.PluginEntry, workspaceRoot string) []plugin.Spec {
 	specs := make([]plugin.Spec, len(entries))
 	for i, e := range entries {
-		specs[i] = pluginSpecFromEntry(e, workspaceRoot)
+		e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
+		spec := plugin.Spec{
+			Name:    e.Name,
+			Type:    e.Type,
+			Command: e.Command,
+			Args:    e.Args,
+			Env:     e.Env,
+			URL:     e.URL,
+			Headers: e.Headers,
+		}
+		specs[i] = plugin.ApplyKnownReadOnlyOverrides(spec)
 	}
 	return specs
 }
 
-func pluginSpecFromEntry(e config.PluginEntry, workspaceRoot string) plugin.Spec {
-	e = e.ExpandedPlugin() // resolve ${VAR} / ${VAR:-default} from the environment
-	return plugin.ApplyKnownOverrides(plugin.Spec{
-		Name:    e.Name,
-		Type:    e.Type,
-		Command: e.Command,
-		Args:    e.Args,
-		Env:     e.Env,
-		URL:     e.URL,
-		Headers: e.Headers,
-	}, workspaceRoot)
-}
-
-func applyKnownPluginOverrides(specs []plugin.Spec, workspaceRoot string) []plugin.Spec {
+func applyKnownPluginOverrides(specs []plugin.Spec) []plugin.Spec {
 	out := make([]plugin.Spec, len(specs))
 	for i, spec := range specs {
-		out[i] = plugin.ApplyKnownOverrides(spec, workspaceRoot)
+		out[i] = plugin.ApplyKnownReadOnlyOverrides(spec)
+	}
+	return out
+}
+
+// ensureCodeGraphInit creates .codegraph/ for a fresh project when an external
+// codegraph stdio plugin is configured, mirroring the old bundled flow's init
+// step. codegraph's own `serve --mcp` daemon indexes on connect and keeps the
+// index fresh via its file watcher, but it will not create .codegraph/ itself —
+// without it the server runs in a degraded no-index mode. The step is fast
+// (~100ms) and non-fatal; a failure surfaces as a notice and the code_index
+// fallback tool covers the gap.
+func ensureCodeGraphInit(ctx context.Context, root string, sink event.Sink, specsList ...[]plugin.Spec) {
+	root = strings.TrimSpace(root)
+	if !codeGraphIndexableRoot(root) {
+		return
+	}
+	var spec *plugin.Spec
+	for _, specs := range specsList {
+		for i := range specs {
+			s := &specs[i]
+			if !isCodeGraphStdioSpec(s) {
+				continue
+			}
+			spec = s
+			break
+		}
+		if spec != nil {
+			break
+		}
+	}
+	if spec == nil || strings.TrimSpace(spec.Command) == "" {
+		return
+	}
+	if fi, err := os.Stat(filepath.Join(root, ".codegraph")); err == nil && fi.IsDir() {
+		return
+	}
+	go func() {
+		cmd := exec.Command(spec.Command, "init", root)
+		cmd.Dir = root
+		cmd.Env = applySpecEnv(os.Environ(), spec.Env)
+		if err := cmd.Run(); err != nil {
+			if sink != nil {
+				msg := fmt.Sprintf("codegraph: init failed (%v) — run `%s init %s` to enable symbol-graph tools; using code_index/grep meanwhile", err, spec.Command, root)
+				sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg})
+			}
+		}
+	}()
+}
+
+// codeGraphIndexableRoot reports whether root is a real project directory codegraph
+// can safely be pinned to: a filesystem root (C:\, a UNC share, or unix /) and an
+// empty root are rejected so `codegraph init` never walks the whole volume.
+func codeGraphIndexableRoot(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	return filepath.Dir(abs) != abs
+}
+
+// isCodeGraphStdioSpec reports whether s is a stdio plugin spec named codegraph.
+func isCodeGraphStdioSpec(s *plugin.Spec) bool {
+	if !strings.EqualFold(strings.TrimSpace(s.Name), "codegraph") {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(s.Type)) {
+	case "", "stdio":
+		return true
+	}
+	return false
+}
+
+// applySpecEnv returns base with overrides applied, replacing (not duplicating)
+// any key that overrides also sets — most importantly a PATH pin for the node
+// runtime an external codegraph server runs under.
+func applySpecEnv(base []string, overrides map[string]string) []string {
+	if len(overrides) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(overrides))
+	for _, kv := range base {
+		if k, _, ok := strings.Cut(kv, "="); ok {
+			if _, dup := overrides[k]; dup {
+				continue
+			}
+		}
+		out = append(out, kv)
+	}
+	for k, v := range overrides {
+		out = append(out, k+"="+v)
 	}
 	return out
 }
