@@ -60,7 +60,7 @@ func TestListSessionsUsesSidecarWithoutDecoding(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "a"},
 	})
 	// Sidecar deliberately disagrees with the file (3 turns, custom preview).
-	if err := UpdateSessionMeta(path, "", "cached preview line", 3, true); err != nil {
+	if err := UpdateSessionMeta(path, "", "cached preview line", 3, true, true); err != nil {
 		t.Fatalf("UpdateSessionMeta: %v", err)
 	}
 
@@ -113,6 +113,56 @@ func TestListSessionsBackfillsLegacySession(t *testing.T) {
 	}
 	if !meta.UpdatedAt.Equal(updated) {
 		t.Fatalf("backfill bumped UpdatedAt: got %v want %v", meta.UpdatedAt, updated)
+	}
+}
+
+// A user-only session (a failed/interrupted turn) is not a conversation and
+// must be skipped by ListSessions, then recorded as non-replying so later
+// listings skip it without re-decoding.
+func TestListSessionsSkipsUserOnlySession(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260101-000000-deepseek-chat.jsonl")
+	writeSessionFile(t, path, []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "prompt that got no reply"},
+	})
+
+	infos, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("user-only session must be skipped, got %+v", infos)
+	}
+
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("user-only session should have been stamped: ok=%v err=%v", ok, err)
+	}
+	if meta.SchemaVersion != BranchMetaCountsVersion || meta.HasReply || meta.Turns != 1 {
+		t.Fatalf("sidecar not recorded as user-only-empty: version=%d hasReply=%v turns=%d", meta.SchemaVersion, meta.HasReply, meta.Turns)
+	}
+}
+
+// A counts-authoritative sidecar recording HasReply=false must be trusted as
+// empty and skipped WITHOUT decoding the .jsonl, mirroring the Turns==0 trust.
+func TestListSessionsTrustsRecordedNoReplyWithoutDecoding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "20260101-000000-deepseek-chat.jsonl")
+	writeSessionFile(t, path, []provider.Message{
+		{Role: provider.RoleUser, Content: "real content the meta will lie about"},
+		{Role: provider.RoleAssistant, Content: "a"},
+	})
+	if err := SaveBranchMeta(path, BranchMeta{ID: BranchID(path), Turns: 1, HasReply: false, SchemaVersion: BranchMetaCountsVersion}); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	infos, err := ListSessions(dir)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Fatalf("a counts-authoritative no-reply session should be skipped without decoding; got %d", len(infos))
 	}
 }
 

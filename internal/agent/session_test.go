@@ -190,10 +190,12 @@ func TestListSessionsSorted(t *testing.T) {
 	// Create two sessions with different content.
 	s1 := NewSession("")
 	s1.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	s1.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	s1.Save(filepath.Join(dir, "a.jsonl"))
 
 	s2 := NewSession("")
 	s2.Add(provider.Message{Role: provider.RoleUser, Content: "second"})
+	s2.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	s2.Save(filepath.Join(dir, "b.jsonl"))
 
 	sessions, err := ListSessions(dir)
@@ -229,6 +231,7 @@ func TestListSessionsSkipsNonJSONL(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a session"), 0o644)
 	s := NewSession("")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "real"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	s.Save(filepath.Join(dir, "real.jsonl"))
 
 	sessions, err := ListSessions(dir)

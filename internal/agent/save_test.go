@@ -97,6 +97,7 @@ func TestListSessionsOrdersByMTime(t *testing.T) {
 	for _, name := range []string{"a.jsonl", "b.jsonl"} {
 		s := NewSession("")
 		s.Add(provider.Message{Role: provider.RoleUser, Content: "preview for " + name})
+		s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 		if err := s.Save(filepath.Join(dir, name)); err != nil {
 			t.Fatal(err)
 		}
@@ -130,6 +131,7 @@ func TestListSessionsSkipsCleanupPending(t *testing.T) {
 	path := filepath.Join(dir, "pending.jsonl")
 	s := NewSession("")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "preview"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	if err := s.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +169,7 @@ func TestListSessionsOrdersByLastActivityMeta(t *testing.T) {
 	for _, path := range []string{aPath, bPath} {
 		s := NewSession("")
 		s.Add(provider.Message{Role: provider.RoleUser, Content: "preview for " + filepath.Base(path)})
+		s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 		if err := s.Save(path); err != nil {
 			t.Fatal(err)
 		}
@@ -208,6 +211,7 @@ func TestListSessionOrderIncludesEmptySessionsWithoutPreviewScan(t *testing.T) {
 	}
 	s := NewSession("")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "real prompt"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "real reply"})
 	if err := s.Save(realPath); err != nil {
 		t.Fatal(err)
 	}

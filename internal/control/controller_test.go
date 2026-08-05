@@ -47,6 +47,7 @@ type appendingRunner struct {
 
 func (r appendingRunner) Run(_ context.Context, input string) error {
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	r.session.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply to " + input})
 	return nil
 }
 
@@ -253,8 +254,8 @@ func TestRunTurnSnapshotsActivityWhenTranscriptChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Messages) != 2 {
-		t.Fatalf("saved messages = %d, want system + user", len(loaded.Messages))
+	if len(loaded.Messages) != 3 {
+		t.Fatalf("saved messages = %d, want system + user + assistant", len(loaded.Messages))
 	}
 	meta, ok, err := agent.LoadBranchMeta(path)
 	if err != nil || !ok {
@@ -262,6 +263,72 @@ func TestRunTurnSnapshotsActivityWhenTranscriptChanges(t *testing.T) {
 	}
 	if meta.UpdatedAt.IsZero() {
 		t.Fatal("activity meta should be marked")
+	}
+}
+
+// errorRunner appends the user prompt (like the real agent) and then fails
+// before the model produces any output — the failed-turn scenario that used to
+// litter the session dir with "empty" one-turn sessions.
+type errorRunner struct {
+	session *agent.Session
+}
+
+func (r errorRunner) Run(_ context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	return fmt.Errorf("provider boom")
+}
+
+// progressErrorRunner appends the user prompt AND a partial assistant reply
+// before failing — the case where a turn made real progress and its partial
+// transcript should be kept.
+type progressErrorRunner struct {
+	session *agent.Session
+}
+
+func (r progressErrorRunner) Run(_ context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	r.session.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial reply before failure"})
+	return fmt.Errorf("provider boom after progress")
+}
+
+func TestFailedTurnDoesNotPersistEmptySession(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Runner: errorRunner{session: sess}, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	if err := c.runTurn(context.Background(), "hello"); err == nil {
+		t.Fatal("expected turn error")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("failed turn should not persist an empty session file, stat err=%v", err)
+	}
+	// The orphaned user prompt must not stay in the in-memory session either.
+	if got := len(sess.Snapshot()); got != 1 {
+		t.Fatalf("session should be stripped back to the system prompt, got %+v", sess.Snapshot())
+	}
+}
+
+func TestFailedTurnKeepsPartialProgress(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Runner: progressErrorRunner{session: sess}, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	if err := c.runTurn(context.Background(), "hello"); err == nil {
+		t.Fatal("expected turn error")
+	}
+	if got := len(sess.Snapshot()); got != 3 {
+		t.Fatalf("partial progress should be kept, got %+v", sess.Snapshot())
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("partial transcript should be persisted: %v", err)
+	}
+	if len(loaded.Messages) != 3 || loaded.Messages[2].Content != "partial reply before failure" {
+		t.Fatalf("saved transcript = %+v, want user + partial assistant reply", loaded.Messages)
 	}
 }
 
@@ -367,6 +434,7 @@ func TestSnapshotDoesNotRefreshSessionActivity(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "first reply"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{Executor: exec, SessionDir: dir, Label: "test", ModelRef: "provider/model-a"})
 	c.SetSessionPath(filepath.Join(dir, "session.jsonl"))
@@ -431,6 +499,7 @@ func TestSnapshotActivitySavesTranscriptBeforeModelMeta(t *testing.T) {
 	path := filepath.Join(dir, "session.jsonl")
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "must persist"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test", ModelRef: "provider/model-a"})
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -447,7 +516,7 @@ func TestSnapshotActivitySavesTranscriptBeforeModelMeta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript was not saved before metadata error: %v", err)
 	}
-	if len(loaded.Messages) == 0 || loaded.Messages[len(loaded.Messages)-1].Content != "must persist" {
+	if len(loaded.Messages) != 3 || loaded.Messages[1].Content != "must persist" {
 		t.Fatalf("saved transcript = %+v, want persisted user message", loaded.Messages)
 	}
 }
@@ -456,6 +525,7 @@ func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "old reply"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	path := filepath.Join(dir, "session.jsonl")
 	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
@@ -470,7 +540,7 @@ func TestNewSessionStartsFreshContextAndSavesTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(loaded.Messages) != 2 || loaded.Messages[1].Content != "old context" {
+	if len(loaded.Messages) != 3 || loaded.Messages[1].Content != "old context" {
 		t.Fatalf("previous transcript was not saved: %+v", loaded.Messages)
 	}
 	current := exec.Session().Snapshot()
@@ -1245,6 +1315,7 @@ type blockingRunner struct {
 
 func (r blockingRunner) Run(_ context.Context, input string) error {
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	r.session.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial output"})
 	<-r.release
 	return nil
 }

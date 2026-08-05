@@ -77,3 +77,18 @@ func (s *Session) HasContent() bool {
 	}
 	return false
 }
+
+// HasAssistant returns true when the session contains any assistant or tool
+// message, i.e. at least one completed turn with a model reply. A session with
+// only system/user messages is an interrupted or failed turn that should not
+// be persisted as a standalone "empty" session.
+func (s *Session) HasAssistant() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, m := range s.Messages {
+		if m.Role != provider.RoleSystem && m.Role != provider.RoleUser {
+			return true
+		}
+	}
+	return false
+}

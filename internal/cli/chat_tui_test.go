@@ -437,6 +437,7 @@ func TestClearCommandRequiresConfirmationAndDiscardsSession(t *testing.T) {
 	dir := t.TempDir()
 	sess := agent.NewSession("sys")
 	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "old reply"})
 	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
 	path := filepath.Join(dir, "session.jsonl")
 	ctrl := control.New(control.Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
@@ -470,7 +471,7 @@ func TestClearCommandRequiresConfirmationAndDiscardsSession(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("session should still exist before confirmation: %v", err)
 	}
-	if current := exec.Session().Snapshot(); len(current) != 2 {
+	if current := exec.Session().Snapshot(); len(current) != 3 {
 		t.Fatalf("context changed before confirmation: %+v", current)
 	}
 

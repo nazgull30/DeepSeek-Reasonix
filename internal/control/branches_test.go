@@ -16,6 +16,7 @@ func TestBranchAndSwitch(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
+	exec.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: "root reply"})
 	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.SetSessionPath(agent.NewSessionPath(dir, "test"))
 	if err := c.Snapshot(); err != nil {
@@ -61,6 +62,7 @@ func TestSwitchBranchRejectsCleanupPending(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
+	exec.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: "root reply"})
 	c := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
 	c.SetSessionPath(filepath.Join(dir, "root.jsonl"))
 	if err := c.Snapshot(); err != nil {
