@@ -173,7 +173,7 @@ var dangerousBashPatterns = []struct {
 func BashDangerWarning(subject string) string {
 	s := strings.TrimSpace(subject)
 	for _, d := range dangerousBashPatterns {
-		if matchGlob(d.pattern, s) {
+		if MatchGlob(d.pattern, s) {
 			return d.label
 		}
 	}

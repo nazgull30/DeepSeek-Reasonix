@@ -61,8 +61,8 @@ func TestMatchGlob(t *testing.T) {
 		{"*.go", "main.rs", false},
 	}
 	for _, c := range cases {
-		if got := matchGlob(c.pattern, c.name); got != c.want {
-			t.Errorf("matchGlob(%q, %q) = %v, want %v", c.pattern, c.name, got, c.want)
+		if got := MatchGlob(c.pattern, c.name); got != c.want {
+			t.Errorf("MatchGlob(%q, %q) = %v, want %v", c.pattern, c.name, got, c.want)
 		}
 	}
 }

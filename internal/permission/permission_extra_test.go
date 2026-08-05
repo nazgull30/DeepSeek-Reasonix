@@ -67,43 +67,43 @@ func TestDecisionString(t *testing.T) {
 
 func TestMatchGlobEmptyPattern(t *testing.T) {
 	// Empty pattern matches empty name (both consumed simultaneously).
-	if !matchGlob("", "") {
+	if !MatchGlob("", "") {
 		t.Error("empty pattern should match empty name")
 	}
-	if matchGlob("", "anything") {
+	if MatchGlob("", "anything") {
 		t.Error("empty pattern should not match non-empty name")
 	}
 }
 
 func TestMatchGlobOnlyStars(t *testing.T) {
-	if !matchGlob("***", "anything") {
+	if !MatchGlob("***", "anything") {
 		t.Error("pattern *** should match anything")
 	}
-	if !matchGlob("*", "") {
+	if !MatchGlob("*", "") {
 		t.Error("pattern * should match empty string")
 	}
 }
 
 func TestMatchGlobPatternLongerThanName(t *testing.T) {
-	if matchGlob("abcdefgh", "abc") {
+	if MatchGlob("abcdefgh", "abc") {
 		t.Error("pattern longer than name should not match")
 	}
 }
 
 func TestMatchGlobConsecutiveStars(t *testing.T) {
-	if !matchGlob("a**c", "abc") {
+	if !MatchGlob("a**c", "abc") {
 		t.Error("a**c should match abc")
 	}
 }
 
 func TestMatchGlobQuestionMark(t *testing.T) {
-	if !matchGlob("?", "a") {
+	if !MatchGlob("?", "a") {
 		t.Error("? should match single char")
 	}
-	if matchGlob("?", "") {
+	if MatchGlob("?", "") {
 		t.Error("? should not match empty")
 	}
-	if matchGlob("?", "ab") {
+	if MatchGlob("?", "ab") {
 		t.Error("? should not match two chars")
 	}
 }

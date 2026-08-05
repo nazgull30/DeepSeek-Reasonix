@@ -269,6 +269,7 @@ func wireOrchestrator(ctx context.Context, cfg *config.Config, ctrl *control.Con
 			Sink:                 agentSink,
 			SystemPrompt:         entryPrompt,
 			ToolDenylist:         denylist,
+			ToolAllowlist:        entry.Tools,
 			InheritProjectMemory: entry.InheritProjectMemory,
 			WorkspaceRoot:        workspaceRoot,
 		})

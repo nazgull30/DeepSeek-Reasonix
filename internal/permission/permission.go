@@ -302,12 +302,12 @@ func stringArg(m map[string]any, key string) string {
 	return ""
 }
 
-// matchGlob reports whether name matches pattern, where '*' matches any run of
+// MatchGlob reports whether name matches pattern, where '*' matches any run of
 // characters (including separators) and '?' matches exactly one. Unlike
 // path.Match, '*' is not stopped by '/', which is what command-line and path
 // prefixes ("rm -rf*", "/etc/*") intuitively expect. Linear time with
 // backtracking, byte-oriented.
-func matchGlob(pattern, name string) bool {
+func MatchGlob(pattern, name string) bool {
 	var px, nx, starPx, starNx int
 	starPx = -1
 	for nx < len(name) {
@@ -538,7 +538,7 @@ func ruleSubjectMatches(rule Rule, subject string) bool {
 			return bashPrefixMatches(base, subject)
 		}
 	}
-	return matchGlob(rule.Subject, subject)
+	return MatchGlob(rule.Subject, subject)
 }
 
 func bashColonPrefixBase(pattern string) (string, bool) {

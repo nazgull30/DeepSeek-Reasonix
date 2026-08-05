@@ -105,6 +105,13 @@ type Options struct {
 	// plugins, and skills are registered. Used to prevent managed agents from
 	// exposing orchestrator meta-tools or other unwanted capabilities.
 	ToolDenylist []string
+	// ToolAllowlist, when non-empty, removes every tool that matches none of the
+	// patterns after all built-ins, plugins, and skills are registered. Patterns
+	// follow the same glob semantics as the permission allow rules ('*' matches
+	// any run of characters, including '/'). Used to give orchestrator child
+	// agents a strict, minimal tool surface (e.g. only allowlisted MCP tools plus
+	// bash). An empty list keeps everything, preserving backward compatibility.
+	ToolAllowlist []string
 	// InheritProjectMemory controls whether project memory (REASONIX.md /
 	// AGENTS.md hierarchy) is composed into the system prompt. nil means inherit
 	// (default, backward compatible); false means skip. Only meaningful when
@@ -1042,6 +1049,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		reg.Remove(name)
 	}
 
+	if len(opts.ToolAllowlist) > 0 {
+		for _, name := range reg.Names() {
+			if !toolMatchesAny(name, opts.ToolAllowlist) {
+				reg.Remove(name)
+			}
+		}
+	}
+
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1374,6 +1389,19 @@ func addBuiltins(reg *tool.Registry, enabled, writeRoots []string, bashSpec sand
 func pluginToolAllowed(toolName string, allowedPlugins map[string]bool) bool {
 	for name := range allowedPlugins {
 		if strings.HasPrefix(toolName, plugin.ToolPrefix(name)) {
+			return true
+		}
+	}
+	return false
+}
+
+// toolMatchesAny reports whether name matches at least one pattern using the
+// same glob semantics as the permission allow rules: '*' matches any run of
+// characters (including '/'), '?' matches exactly one. Empty patterns never
+// match, so a single empty entry yields an empty tool surface.
+func toolMatchesAny(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if permission.MatchGlob(p, name) {
 			return true
 		}
 	}
