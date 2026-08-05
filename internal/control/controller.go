@@ -656,13 +656,19 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	}
 	if err := c.runner.Run(ctx, input); err != nil {
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
-			c.snapshotActivityIfChanged(startMessages)
-			c.stripTurnMessagesAfter(startMessages)
+			// Explicit user cancel (Ctrl+C / Esc): preserve the completed work
+			// and append the continuation marker so the next turn resumes the
+			// task instead of starting clean.
+			c.trimInterruptedTurn(startMessages)
 		} else if !c.hasAssistantAfter(startMessages) {
 			// The turn failed before the model produced any reply. Discard the
 			// incomplete turn so the orphaned user prompt neither stays in
 			// context nor gets persisted as an "empty" one-turn session.
 			c.stripTurnMessagesAfter(startMessages)
+		} else {
+			// The turn failed after real progress: keep the partial transcript
+			// and mark it so a later "continue" picks up where it stopped.
+			c.trimInterruptedTurn(startMessages)
 		}
 		return err
 	}
@@ -701,10 +707,11 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	}()
 	if err := c.runner.Run(ctx, c.ComposeSynthetic(planApprovedMessage)); err != nil {
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
-			c.snapshotActivityIfChanged(execStart)
-			c.stripTurnMessagesAfter(execStart)
+			c.trimInterruptedTurn(execStart)
 		} else if !c.hasAssistantAfter(execStart) {
 			c.stripTurnMessagesAfter(execStart)
+		} else {
+			c.trimInterruptedTurn(execStart)
 		}
 		return err
 	}
@@ -2600,10 +2607,12 @@ func (c *Controller) snapshot(markActivity bool) error {
 		// prompt) — staying quiet here is correct, not a data-loss path.
 		return nil
 	}
-	if !s.HasAssistant() {
+	if !s.HasAssistant() && !s.HasInterruptedTurn() {
 		// Only system/user messages means every turn failed or was interrupted
 		// before the model replied. Persisting that would litter the session
-		// dir (and /tree) with "empty" one-turn sessions, so stay quiet.
+		// dir (and /tree) with "empty" one-turn sessions, so stay quiet — unless
+		// the turn was explicitly cancelled and carries the continuation marker,
+		// in which case it was deliberately preserved for resumption.
 		return nil
 	}
 	if path == "" {
@@ -2644,10 +2653,9 @@ func (c *Controller) messageCount() int {
 
 // stripTurnMessagesAfter truncates the executor's session to keep only messages
 // before the given index, discarding an incomplete turn (the user prompt plus
-// every assistant / tool message that followed). It is called when the user
-// explicitly cancels a turn so the next prompt starts clean — the model won't
-// see leftover in-progress todo items or partial tool calls and re-execute
-// interrupted work.
+// every assistant / tool message that followed). It is called when a turn fails
+// before producing any output, so the orphaned prompt neither stays in context
+// nor gets persisted as an "empty" one-turn session.
 func (c *Controller) stripTurnMessagesAfter(idx int) {
 	if c.executor == nil {
 		return
@@ -2657,6 +2665,40 @@ func (c *Controller) stripTurnMessagesAfter(idx int) {
 		return
 	}
 	c.executor.Session().Replace(msgs[:idx])
+}
+
+// trimInterruptedTurn preserves an interrupted turn's completed messages so a
+// follow-up "continue" can resume the task, dropping only the dangling partial
+// tool call (an assistant message whose tool calls were never answered — the
+// model must not believe an interrupted call ran) and appending the continuation
+// marker. Unlike stripTurnMessagesAfter, the user's original prompt is kept even
+// when the turn made no progress, so "continue" always has the task in context.
+func (c *Controller) trimInterruptedTurn(idx int) {
+	if c.executor == nil {
+		return
+	}
+	msgs := c.executor.Session().Snapshot()
+	if len(msgs) <= idx {
+		return
+	}
+	turn := msgs[idx:]
+	for len(turn) > 0 {
+		last := turn[len(turn)-1]
+		if last.Role != provider.RoleAssistant || len(last.ToolCalls) == 0 {
+			break
+		}
+		turn = turn[:len(turn)-1]
+	}
+	if len(turn) == 0 {
+		// Everything the turn added was a dangling partial call — nothing to
+		// preserve beyond the marker itself.
+		return
+	}
+	kept := make([]provider.Message, 0, idx+len(turn)+1)
+	kept = append(kept, msgs[:idx]...)
+	kept = append(kept, turn...)
+	kept = append(kept, provider.Message{Role: provider.RoleUser, Content: agent.InterruptedTurnContinueMessage})
+	c.executor.Session().Replace(kept)
 }
 
 // hasAssistantAfter reports whether any message after idx is an assistant or

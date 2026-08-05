@@ -92,3 +92,17 @@ func (s *Session) HasAssistant() bool {
 	}
 	return false
 }
+
+// HasInterruptedTurn reports whether the last message is the continuation
+// marker appended to an explicitly cancelled turn. Such a session has no model
+// reply yet but was deliberately preserved so it can be resumed, and must be
+// persisted despite lacking an assistant message.
+func (s *Session) HasInterruptedTurn() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.Messages) == 0 {
+		return false
+	}
+	last := s.Messages[len(s.Messages)-1]
+	return last.Role == provider.RoleUser && last.Content == InterruptedTurnContinueMessage
+}

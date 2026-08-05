@@ -818,6 +818,16 @@ func TestIsSyntheticUserMessage(t *testing.T) {
 			want:  true,
 		},
 		{
+			name:  "interrupted turn continuation marker",
+			input: agent.InterruptedTurnContinueMessage,
+			want:  true,
+		},
+		{
+			name:  "interrupted turn marker with reasoning language",
+			input: reasoningLanguageBlock("zh") + "\n\n" + agent.InterruptedTurnContinueMessage,
+			want:  true,
+		},
+		{
 			name:  "plan approved message with reasoning language",
 			input: reasoningLanguageBlock("zh") + "\n\n" + planApprovedMessage,
 			want:  true,

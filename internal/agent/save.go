@@ -17,6 +17,14 @@ import (
 
 const cleanupPendingExt = ".cleanup-pending.json"
 
+// InterruptedTurnContinueMessage is appended as a user-role message when a turn
+// is explicitly cancelled (or fails after real progress). It tells the model the
+// transcript above shows completed work and the next turn should resume it
+// rather than restart. Sessions whose last message is this marker carry no
+// assistant reply yet but are still resumable, so listing and persistence treat
+// them specially.
+const InterruptedTurnContinueMessage = "The previous turn was interrupted before it finished. The transcript above shows the work completed so far. Continue the same task from where it left off — do not restart from scratch and do not redo steps that are already completed."
+
 // Save writes the session's messages to path in JSONL — one provider.Message
 // per line — so a user can resume the conversation later. The file is
 // rewritten in full on every save: chat sessions are small (kilobytes), and
@@ -368,10 +376,11 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			// Best-effort: a failure here just means we decode again next time.
 			_ = UpdateSessionMeta(session.Path, "", preview, turns, hasReply, false)
 		}
-		if turns == 0 || !hasReply {
-			// Never had user interaction, or every turn failed before the model
-			// replied — an empty conversation that should not appear in the
-			// history panel or the resume picker.
+		if turns == 0 || (!hasReply && !sessionIsInterrupted(session.Path)) {
+			// No user interaction, or every turn failed before the model replied
+			// — an empty conversation that should not appear in the history panel
+			// or the resume picker. An explicitly cancelled turn carrying the
+			// continuation marker has no reply yet but is resumable, so it stays.
 			continue
 		}
 		out = append(out, SessionInfo{
@@ -401,12 +410,13 @@ func SessionPreview(path string) (string, int) {
 // as previewSession, but from an in-memory message slice. Session.Save writes
 // exactly these messages to the .jsonl, so this is byte-for-byte equivalent to
 // decoding the file — letting the autosave path persist the counts into the
-// sidecar without a disk read.
+// sidecar without a disk read. The interrupted-turn marker is not a real user
+// turn and is skipped so counts stay accurate.
 func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 	first := ""
 	turns := 0
 	for _, m := range msgs {
-		if m.Role == provider.RoleUser {
+		if m.Role == provider.RoleUser && m.Content != InterruptedTurnContinueMessage {
 			turns++
 			if first == "" {
 				first = truncatePreview(UserPreviewText(m.Content))
@@ -430,6 +440,7 @@ func MessagesHaveReply(msgs []provider.Message) bool {
 
 // previewSession returns the first user message (truncated) and the number of
 // user-role messages so the picker can show "5 turns · 'help me debug the…'".
+// The interrupted-turn marker is skipped so it does not inflate the count.
 // Errors are swallowed — a malformed file just shows up with an empty preview.
 func previewSession(path string) (string, int) {
 	f, err := os.Open(path)
@@ -445,7 +456,7 @@ func previewSession(path string) (string, int) {
 		if err := dec.Decode(&m); err != nil {
 			break // EOF or a malformed tail — return the preview gathered so far
 		}
-		if m.Role == provider.RoleUser {
+		if m.Role == provider.RoleUser && m.Content != InterruptedTurnContinueMessage {
 			turns++
 			if first == "" {
 				first = truncatePreview(UserPreviewText(m.Content))
@@ -475,6 +486,29 @@ func sessionHasReply(path string) bool {
 			return true
 		}
 	}
+}
+
+// sessionIsInterrupted reports whether the transcript's last message is the
+// continuation marker appended to an explicitly cancelled turn. Such a session
+// has no model reply yet but was deliberately preserved for resumption, so it
+// should appear in /resume and --continue listings despite having no reply.
+// Errors are swallowed — a malformed file is not an interrupted session.
+func sessionIsInterrupted(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	last := provider.Message{}
+	for {
+		var m provider.Message
+		if err := dec.Decode(&m); err != nil {
+			break // EOF or a malformed tail — use the last message decoded
+		}
+		last = m
+	}
+	return last.Role == provider.RoleUser && last.Content == InterruptedTurnContinueMessage
 }
 
 // truncatePreview clamps a preview line to 80 runes with an ellipsis, matching

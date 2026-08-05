@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -320,15 +321,141 @@ func TestFailedTurnKeepsPartialProgress(t *testing.T) {
 	if err := c.runTurn(context.Background(), "hello"); err == nil {
 		t.Fatal("expected turn error")
 	}
-	if got := len(sess.Snapshot()); got != 3 {
-		t.Fatalf("partial progress should be kept, got %+v", sess.Snapshot())
+	msgs := sess.Snapshot()
+	if len(msgs) != 4 {
+		t.Fatalf("partial progress should be kept with continuation marker, got %+v", msgs)
+	}
+	if msgs[2].Role != provider.RoleAssistant || msgs[2].Content != "partial reply before failure" {
+		t.Fatalf("partial assistant reply = %+v, want the preserved partial reply", msgs[2])
+	}
+	if msgs[3].Role != provider.RoleUser || msgs[3].Content != agent.InterruptedTurnContinueMessage {
+		t.Fatalf("last message should be the continuation marker, got %+v", msgs[3])
 	}
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
 		t.Fatalf("partial transcript should be persisted: %v", err)
 	}
-	if len(loaded.Messages) != 3 || loaded.Messages[2].Content != "partial reply before failure" {
-		t.Fatalf("saved transcript = %+v, want user + partial assistant reply", loaded.Messages)
+	if len(loaded.Messages) != 4 || loaded.Messages[3].Content != agent.InterruptedTurnContinueMessage {
+		t.Fatalf("saved transcript = %+v, want user + partial assistant reply + continuation marker", loaded.Messages)
+	}
+}
+
+// interruptingRunner appends the user prompt (and optionally a dangling partial
+// tool call) and then blocks until the run context is cancelled — the explicit
+// Ctrl+C / Esc scenario.
+type interruptingRunner struct {
+	session  *agent.Session
+	progress bool
+	started  chan struct{}
+}
+
+func (r *interruptingRunner) Run(ctx context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	if r.progress {
+		r.session.Add(provider.Message{
+			Role:      provider.RoleAssistant,
+			Content:   "partial work",
+			ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: "{}"}},
+		})
+	}
+	close(r.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestCancelledTurnIsPreservedForResume(t *testing.T) {
+	for _, progress := range []bool{true, false} {
+		name := "without-progress"
+		if progress {
+			name = "with-progress"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			sess := agent.NewSession("sys")
+			exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+			path := filepath.Join(dir, "session.jsonl")
+			runner := &interruptingRunner{session: sess, progress: progress, started: make(chan struct{})}
+			c := New(Options{Runner: runner, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+			go func() {
+				<-runner.started
+				c.Cancel()
+			}()
+			if err := c.RunTurn(context.Background(), "hello"); !errors.Is(err, context.Canceled) {
+				t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+			}
+
+			msgs := sess.Snapshot()
+			// system + preserved user prompt + continuation marker; the dangling
+			// partial tool call must be dropped either way.
+			if len(msgs) != 3 {
+				t.Fatalf("preserved transcript = %+v, want system + user + marker", msgs)
+			}
+			if msgs[1].Role != provider.RoleUser || msgs[1].Content != "hello" {
+				t.Fatalf("user prompt should be preserved, got %+v", msgs[1])
+			}
+			for _, m := range msgs {
+				if m.Role == provider.RoleAssistant {
+					t.Fatalf("dangling partial tool call should be dropped, got %+v", msgs)
+				}
+			}
+			if last := msgs[len(msgs)-1]; last.Role != provider.RoleUser || last.Content != agent.InterruptedTurnContinueMessage {
+				t.Fatalf("last message should be the continuation marker, got %+v", last)
+			}
+
+			// Persisted even though the session has no assistant reply.
+			loaded, err := agent.LoadSession(path)
+			if err != nil {
+				t.Fatalf("interrupted session should be persisted: %v", err)
+			}
+			if len(loaded.Messages) != 3 || loaded.Messages[2].Content != agent.InterruptedTurnContinueMessage {
+				t.Fatalf("persisted transcript = %+v", loaded.Messages)
+			}
+
+			// And it shows up in the /resume listing.
+			sessions, err := agent.ListSessions(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(sessions) != 1 || sessions[0].Path != path {
+				t.Fatalf("interrupted session should be listed, got %+v", sessions)
+			}
+		})
+	}
+}
+
+// TestCancelledTurnThenContinue appends a normal follow-up turn after an
+// interrupted one, mirroring the user flow: Ctrl+C mid-task, then "continue".
+// The follow-up must land after the preserved prompt + continuation marker so
+// the model sees where the interrupted task stopped.
+func TestCancelledTurnThenContinue(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	runner := &interruptingRunner{session: sess, progress: true, started: make(chan struct{})}
+	c := New(Options{Runner: runner, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+
+	go func() {
+		<-runner.started
+		c.Cancel()
+	}()
+	if err := c.RunTurn(context.Background(), "build the feature"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTurn err = %v, want context.Canceled", err)
+	}
+
+	// Now "continue" as the next turn: a normal turn appends after the marker.
+	// A fresh controller shares the session so a clean appending runner drives it.
+	c2 := New(Options{Runner: appendingRunner{session: sess}, Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := c2.runTurn(context.Background(), "continue"); err != nil {
+		t.Fatalf("follow-up turn: %v", err)
+	}
+	msgs := sess.Snapshot()
+	if len(msgs) != 5 {
+		t.Fatalf("transcript = %+v, want system + task + marker + continue + reply", msgs)
+	}
+	if msgs[1].Content != "build the feature" || msgs[2].Content != agent.InterruptedTurnContinueMessage || msgs[3].Content != "continue" {
+		t.Fatalf("transcript ordering = %+v, want task, marker, continue", msgs)
 	}
 }
 

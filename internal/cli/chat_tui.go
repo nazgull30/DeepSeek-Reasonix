@@ -4049,8 +4049,11 @@ func (m *chatTUI) runExportCommand(input string) {
 	for _, msg := range msgs {
 		switch msg.Role {
 		case provider.RoleUser:
-			// Skip internal steer messages.
+			// Skip internal steer messages and the interrupted-turn marker.
 			if _, isSteer := agent.SteerText(msg.Content); isSteer {
+				continue
+			}
+			if msg.Content == agent.InterruptedTurnContinueMessage {
 				continue
 			}
 			content := control.StripComposePrefixes(msg.Content)
@@ -4289,6 +4292,12 @@ func replaySectionsFor(history []provider.Message, width int, renderer *mdRender
 			// Steer messages are surfaced as a notice line, not a user bubble.
 			if steerText, isSteer := agent.SteerText(m.Content); isSteer {
 				out = append(out, fmt.Sprintf("  ↪ %s\n\n", steerText))
+				continue
+			}
+			// The interrupted-turn marker is surfaced as a dim notice line, not
+			// a user bubble — the model instruction is internal.
+			if m.Content == agent.InterruptedTurnContinueMessage {
+				out = append(out, dim("  · previous turn interrupted — continue to resume\n\n"))
 				continue
 			}
 			content := control.StripComposePrefixes(m.Content)
