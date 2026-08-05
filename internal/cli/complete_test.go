@@ -395,6 +395,7 @@ func TestSlashArgCompletionSwitchBranches(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
 	exec.Session().Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
+	exec.Session().Add(provider.Message{Role: provider.RoleAssistant, Content: "root reply"})
 	ctrl := control.New(control.Options{Executor: exec, SessionDir: dir, Label: "test"})
 	rootPath := filepath.Join(dir, "root.jsonl")
 	ctrl.SetSessionPath(rootPath)
@@ -404,6 +405,7 @@ func TestSlashArgCompletionSwitchBranches(t *testing.T) {
 
 	child := agent.NewSession("sys")
 	child.Add(provider.Message{Role: provider.RoleUser, Content: "child prompt"})
+	child.Add(provider.Message{Role: provider.RoleAssistant, Content: "child reply"})
 	childPath := filepath.Join(dir, "child.jsonl")
 	if err := child.Save(childPath); err != nil {
 		t.Fatal(err)
@@ -413,6 +415,7 @@ func TestSlashArgCompletionSwitchBranches(t *testing.T) {
 	}
 	pending := agent.NewSession("sys")
 	pending.Add(provider.Message{Role: provider.RoleUser, Content: "pending child prompt"})
+	pending.Add(provider.Message{Role: provider.RoleAssistant, Content: "pending reply"})
 	pendingPath := filepath.Join(dir, "pending.jsonl")
 	if err := pending.Save(pendingPath); err != nil {
 		t.Fatal(err)
