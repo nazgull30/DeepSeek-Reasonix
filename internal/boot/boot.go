@@ -1057,7 +1057,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 
 	if len(opts.ToolAllowlist) > 0 {
+		keepBootstrap := keepBootstrapStubs(agentAllowedPlugins, opts.ToolAllowlist)
 		for _, name := range reg.Names() {
+			if keepBootstrap[name] {
+				// Lazy/background MCP bootstrap stub: preserve it so a cold
+				// schema cache can still trigger the handshake that installs
+				// the server's real (allowlisted) tools.
+				continue
+			}
 			if !toolMatchesAny(name, opts.ToolAllowlist) {
 				reg.Remove(name)
 			}
@@ -1413,6 +1420,32 @@ func toolMatchesAny(name string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// keepBootstrapStubs returns the lazy/background MCP bootstrap stubs
+// ("mcp__<server>__connect") that must survive a strict per-agent allowlist
+// trim. On a cold schema cache a lazy server registers only its connect stub,
+// and that stub is the model's only handle for triggering the handshake that
+// installs the server's real tools. Without it an exact-name allowlist strips
+// the stub and the agent is left with no path to the server's tools at all.
+// A server is only protected when the allowlist already admits at least one of
+// its real tools, so servers the agent is not allowed to use still contribute
+// nothing and stay fully hidden.
+func keepBootstrapStubs(servers map[string]bool, allowlist []string) map[string]bool {
+	keep := map[string]bool{}
+	if len(allowlist) == 0 {
+		return keep
+	}
+	for server := range servers {
+		prefix := plugin.ToolPrefix(server)
+		for _, p := range allowlist {
+			if strings.HasPrefix(p, prefix) {
+				keep[prefix+"connect"] = true
+				break
+			}
+		}
+	}
+	return keep
 }
 
 // toolAllowed reports whether name passes both the per-agent allowlist and

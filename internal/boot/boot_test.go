@@ -2547,3 +2547,60 @@ func TestToolAllowedGitAgentAllowlist(t *testing.T) {
 		}
 	}
 }
+
+// TestKeepBootstrapStubs is the regression test for the cold-cache git agent
+// failure: an exact-name allowlist stripped the "mcp__gitlab__connect" bootstrap
+// stub (the only tool a cache-miss lazy server registers), leaving the child
+// agent with nothing but bash. A server whose allowlist admits any of its real
+// tools must keep its connect stub so the handshake that installs them can still
+// be triggered.
+func TestKeepBootstrapStubs(t *testing.T) {
+	servers := map[string]bool{
+		"gitlab":    true,
+		"godot":     true,
+		"codegraph": true,
+	}
+
+	cases := []struct {
+		name      string
+		allowlist []string
+		want      map[string]bool
+	}{
+		{
+			name:      "exact-name allowlist keeps gitlab connect stub",
+			allowlist: []string{"mcp__gitlab__get_issue", "mcp__gitlab__list_issues", "bash"},
+			want:      map[string]bool{"mcp__gitlab__connect": true},
+		},
+		{
+			name:      "glob allowlist keeps godot connect stub",
+			allowlist: []string{"mcp__godot__*"},
+			want:      map[string]bool{"mcp__godot__connect": true},
+		},
+		{
+			name:      "server absent from allowlist contributes no stub",
+			allowlist: []string{"bash", "mcp__gitlab__get_issue"},
+			want:      map[string]bool{"mcp__gitlab__connect": true},
+		},
+		{
+			name:      "empty allowlist keeps nothing (not a strict trim)",
+			allowlist: nil,
+			want:      map[string]bool{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := keepBootstrapStubs(servers, tc.allowlist)
+			for stub := range tc.want {
+				if !got[stub] {
+					t.Errorf("keepBootstrapStubs: missing %q in %v", stub, got)
+				}
+			}
+			for stub := range got {
+				if !tc.want[stub] {
+					t.Errorf("keepBootstrapStubs: unexpected %q in %v", stub, got)
+				}
+			}
+		})
+	}
+}

@@ -168,10 +168,26 @@ func TestSpecFingerprintChangesOnCommandEdit(t *testing.T) {
 		t.Fatal("SpecFingerprint did not change when Args changed")
 	}
 
+	// Adding/removing an env key changes the config shape and must
+	// invalidate; changing an env *value* (frequently a secret like an API
+	// token) must NOT churn the hash — otherwise token rotation would
+	// needlessly invalidate an otherwise valid schema cache.
 	d := a
-	d.Env = map[string]string{"FOO": "1", "BAR": "different"}
+	d.Env = map[string]string{"FOO": "1", "NEW_KEY": "2"}
 	if SpecFingerprint(a) == SpecFingerprint(d) {
-		t.Fatal("SpecFingerprint did not change when env value changed")
+		t.Fatal("SpecFingerprint did not change when an env key was added")
+	}
+
+	e := a
+	e.Env = map[string]string{"FOO": "1", "BAR": "completely-different-secret"}
+	if SpecFingerprint(a) != SpecFingerprint(e) {
+		t.Fatal("SpecFingerprint changed when only an env value (secret) changed")
+	}
+
+	f := a
+	f.Headers = map[string]string{"X-Custom": "changed-secret"}
+	if SpecFingerprint(a) != SpecFingerprint(f) {
+		t.Fatal("SpecFingerprint changed when only a header value (secret) changed")
 	}
 }
 
