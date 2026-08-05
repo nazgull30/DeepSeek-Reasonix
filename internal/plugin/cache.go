@@ -74,10 +74,14 @@ type CachedTool struct {
 }
 
 // SpecFingerprint hashes the load-bearing parts of a Spec so changing the
-// command/url/args/env (not just renaming) invalidates the cache. Env map
+// command/url/args/env shape (not just renaming) invalidates the cache. Env map
 // keys are sorted so ordering doesn't perturb the hash — Go map iteration
 // order is randomised, so we'd otherwise get fingerprint churn on every
-// launch.
+// launch. Only env/header *keys* are hashed, never values: values are
+// frequently credentials (API tokens, authorization headers), and rotating one
+// must not invalidate an otherwise valid schema cache — the cache is keyed by
+// plugin name, and a server's schema depends on its binary/config shape, not
+// on the current credential values.
 func SpecFingerprint(s Spec) string {
 	h := sha256.New()
 	writeField(h, "type", s.Type)
@@ -87,8 +91,8 @@ func SpecFingerprint(s Spec) string {
 	for _, a := range s.Args {
 		writeField(h, "arg", a)
 	}
-	writeKV(h, "env", s.Env)
-	writeKV(h, "headers", s.Headers)
+	writeKVKeys(h, "env", s.Env)
+	writeKVKeys(h, "headers", s.Headers)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -203,9 +207,10 @@ func writeField(h io.Writer, key, val string) {
 	_, _ = h.Write([]byte{1})
 }
 
-// writeKV hashes a map deterministically by sorting keys, so Go's randomised
-// map iteration doesn't churn the fingerprint between launches.
-func writeKV(h io.Writer, key string, m map[string]string) {
+// writeKVKeys hashes only the keys of a map deterministically by sorting them,
+// so Go's randomised map iteration doesn't churn the fingerprint between
+// launches. Values are deliberately omitted (see SpecFingerprint).
+func writeKVKeys(h io.Writer, key string, m map[string]string) {
 	if len(m) == 0 {
 		writeField(h, key, "")
 		return
@@ -216,6 +221,6 @@ func writeKV(h io.Writer, key string, m map[string]string) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		writeField(h, key+"."+k, m[k])
+		writeField(h, key+"."+k, k)
 	}
 }
