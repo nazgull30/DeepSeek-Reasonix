@@ -2480,3 +2480,70 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 		t.Fatal("empty allowlist dropped bash")
 	}
 }
+
+// TestToolAllowedGitAgentAllowlist is the regression test for the lazy-swap
+// allowlist bypass (git agent flooding in mcp__git__*, mcp__codegraph__*, and
+// the non-allowlisted gitlab tools after its MCP servers spawn). It pins the
+// exact predicate boot now threads into plugin.LazyToolset so a per-agent
+// allowlist survives MCP hydration.
+func TestToolAllowedGitAgentAllowlist(t *testing.T) {
+	allowlist := []string{
+		"mcp__gitlab__get_merge_request",
+		"mcp__gitlab__create_merge_request", "mcp__gitlab__update_merge_request",
+		"mcp__gitlab__merge_merge_request", "mcp__gitlab__approve_merge_request",
+		"mcp__gitlab__unapprove_merge_request", "mcp__gitlab__get_merge_request_approval_state",
+		"mcp__gitlab__get_merge_request_diffs", "mcp__gitlab__list_merge_request_changed_files",
+		"mcp__gitlab__get_merge_request_file_diff", "mcp__gitlab__list_merge_request_versions",
+		"mcp__gitlab__get_merge_request_notes", "mcp__gitlab__create_merge_request_note",
+		"mcp__gitlab__mr_discussions", "mcp__gitlab__create_merge_request_discussion_note",
+		"mcp__gitlab__resolve_merge_request_thread",
+		"mcp__gitlab__list_issues", "mcp__gitlab__my_issues", "mcp__gitlab__get_issue",
+		"mcp__gitlab__create_issue", "mcp__gitlab__update_issue", "mcp__gitlab__create_issue_note",
+		"mcp__gitlab__list_issue_links", "mcp__gitlab__list_todos",
+		"mcp__gitlab__list_branches", "mcp__gitlab__get_branch", "mcp__gitlab__create_branch",
+		"mcp__gitlab__delete_branch",
+		"mcp__gitlab__get_project", "mcp__gitlab__list_projects", "mcp__gitlab__list_project_members",
+		"mcp__gitlab__whoami",
+		"mcp__gitlab__list_commits", "mcp__gitlab__get_commit", "mcp__gitlab__get_commit_diff",
+		"mcp__gitlab__list_commit_statuses", "mcp__gitlab__create_commit_status",
+		"mcp__gitlab__search_code",
+		"bash",
+	}
+	// Orchestrator children also carry the orchestrator tool denylist.
+	denylist := []string{"orchestrator_add_agent", "orchestrator_list_agents", "orchestrator_remove_agent"}
+
+	allowed := []string{
+		"bash",
+		"mcp__gitlab__get_merge_request",
+		"mcp__gitlab__list_merge_request_changed_files",
+		"mcp__gitlab__search_code",
+	}
+	for _, name := range allowed {
+		if !toolAllowed(name, allowlist, denylist) {
+			t.Errorf("toolAllowed(%q) = false, want true (allowlisted)", name)
+		}
+	}
+
+	denied := []string{
+		// GitLab tools the allowlist omitted — must not resurrect on spawn.
+		"mcp__gitlab__list_pipelines",
+		"mcp__gitlab__get_pipeline",
+		"mcp__gitlab__get_project_milestones",
+		"mcp__gitlab__discover_tools",
+		// mcp__git__* is explicitly excluded in the git agent prompt.
+		"mcp__git__checkout",
+		"mcp__git__commit",
+		"mcp__git__branch_create",
+		"mcp__git__status",
+		// codegraph is visible to every agent, but not allowlisted for git.
+		"mcp__codegraph__query",
+		"mcp__codegraph__index",
+		// orchestrator internals are denied for child agents.
+		"orchestrator_add_agent",
+	}
+	for _, name := range denied {
+		if toolAllowed(name, allowlist, denylist) {
+			t.Errorf("toolAllowed(%q) = true, want false (not allowlisted or denied)", name)
+		}
+	}
+}

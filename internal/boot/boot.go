@@ -482,6 +482,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// (background). Both share the same pluginHost so /mcp status, hot-add,
 	// and Close see one cohesive set of servers regardless of tier.
 	registerDeferred := func(specs []plugin.Spec, kick bool) {
+		// ToolFilter keeps a per-agent ToolAllowlist/ToolDenylist in force
+		// across the placeholder→real swap: without it, lazy/background MCP
+		// servers would re-install their full toolset on first spawn, undoing
+		// the allowlist trimming done by the strict filter below.
+		toolFilter := func(name string) bool {
+			return toolAllowed(name, opts.ToolAllowlist, opts.ToolDenylist)
+		}
 		for _, s := range specs {
 			if !agentAllowedPlugins[s.Name] {
 				// Not visible to this agent. Still kick if the spec asked
@@ -514,12 +521,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				// every workspace root on boot — a tab that sits unused for
 				// days never pays the startup cost.
 				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
-				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, false) {
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, false, toolFilter) {
 					reg.Add(t)
 				}
 			} else {
 				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
-				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick) {
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick, toolFilter) {
 					reg.Add(t)
 				}
 			}
@@ -1406,6 +1413,22 @@ func toolMatchesAny(name string, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// toolAllowed reports whether name passes both the per-agent allowlist and
+// denylist. An empty allowlist permits everything; a non-empty one is strict
+// (name must match at least one pattern). The denylist always wins. Shared by
+// the boot-time strict trim and the lazy-spawn swap filter so a per-agent
+// allowlist cannot be bypassed when an MCP server's real toolset is installed
+// after the first spawn.
+func toolAllowed(name string, allowlist, denylist []string) bool {
+	if len(allowlist) > 0 && !toolMatchesAny(name, allowlist) {
+		return false
+	}
+	if len(denylist) > 0 && toolMatchesAny(name, denylist) {
+		return false
+	}
+	return true
 }
 
 func builtinToolEnabled(enabled []string, name string) bool {
