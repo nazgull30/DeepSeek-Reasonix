@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/acp"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/netclient"
 	"reasonix/internal/provider"
@@ -108,6 +109,75 @@ api_key_env = "REASONIX_TEST_KEY"
 		}
 	}
 	t.Fatalf("ACP session did not load project command from cwd; commands=%v", ctrl.Commands())
+}
+
+// TestACPFactoryAppliesToolApprovalMode verifies the ACP session default tool
+// approval posture: the launch flag wins over the project [agent]
+// tool_approval_mode, which wins over ask.
+func TestACPFactoryAppliesToolApprovalMode(t *testing.T) {
+	isolateCLIConfigHome(t)
+	t.Setenv("REASONIX_TEST_KEY", "test-key")
+
+	writeACPProject := func(t *testing.T, agentLine string) string {
+		t.Helper()
+		project := t.TempDir()
+		body := `
+default_model = "local"
+
+[[providers]]
+name = "local"
+kind = "acp-test-provider"
+base_url = "http://example.invalid"
+model = "fake-model"
+api_key_env = "REASONIX_TEST_KEY"
+`
+		if agentLine != "" {
+			body += "\n[agent]\n" + agentLine + "\n"
+		}
+		if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return project
+	}
+
+	newSessionCtrl := func(t *testing.T, f *acpFactory, project string) *control.Controller {
+		t.Helper()
+		ctrl, err := f.NewSession(context.Background(), acp.SessionParams{Cwd: project, Sink: event.Discard})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(func() { ctrl.Close() })
+		return ctrl
+	}
+
+	// Config default wins when no flag is set.
+	project := writeACPProject(t, `tool_approval_mode = "yolo"`)
+	f := &acpFactory{}
+	ctrl := newSessionCtrl(t, f, project)
+	if got := ctrl.ToolApprovalMode(); got != "yolo" {
+		t.Fatalf("config-default mode = %q, want yolo", got)
+	}
+	if got := f.effectiveToolApprovalMode(project); got != "yolo" {
+		t.Fatalf("effectiveToolApprovalMode = %q, want yolo", got)
+	}
+
+	// Launch flag wins over the config default.
+	fFlag := &acpFactory{toolApprovalMode: "auto"}
+	ctrlFlag := newSessionCtrl(t, fFlag, project)
+	if got := ctrlFlag.ToolApprovalMode(); got != "auto" {
+		t.Fatalf("flag mode = %q, want auto", got)
+	}
+	if got := fFlag.effectiveToolApprovalMode(project); got != "auto" {
+		t.Fatalf("flag effectiveToolApprovalMode = %q, want auto", got)
+	}
+
+	// No flag and no config → ask.
+	plain := writeACPProject(t, "")
+	fPlain := &acpFactory{}
+	ctrlPlain := newSessionCtrl(t, fPlain, plain)
+	if got := ctrlPlain.ToolApprovalMode(); got != "ask" {
+		t.Fatalf("default mode = %q, want ask", got)
+	}
 }
 
 func TestACPFactoryClearsEffortOverrideForUnsupportedModel(t *testing.T) {
@@ -284,4 +354,56 @@ func (p *acpTestProvider) Stream(context.Context, provider.Request) (<-chan prov
 	ch <- provider.Chunk{Type: provider.ChunkDone}
 	close(ch)
 	return ch, nil
+}
+
+// TestACPFactoryWiresOrchestratorAndReleases verifies that ACP sessions get the
+// [orchestrator] child agents wired onto the main controller (so the agent can
+// delegate via agent_spawn / agent_send) and that ReleaseSession persists and
+// releases them when the session tears down.
+func TestACPFactoryWiresOrchestratorAndReleases(t *testing.T) {
+	writeOrchestratorProject(t, `
+[[orchestrator.agents]]
+name = "worker"
+model = "test-model"
+persist = true
+`)
+	t.Setenv("REASONIX_TEST_KEY_UNSET", "sk-test")
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	f := &acpFactory{}
+	ctrl, err := f.NewSession(context.Background(), acp.SessionParams{Cwd: cwd, Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("acpFactory.NewSession: %v", err)
+	}
+	defer ctrl.Close()
+
+	for _, name := range []string{"agent_spawn", "agent_send", "agent_status", "agent_stats"} {
+		if _, ok := ctrl.Registry().Get(name); !ok {
+			t.Fatalf("orchestrator tool %q not registered on ACP session controller", name)
+		}
+	}
+
+	f.mu.Lock()
+	orc := f.orcs[ctrl]
+	f.mu.Unlock()
+	if orc == nil {
+		t.Fatal("acpFactory did not track the session orchestrator")
+	}
+	if got := orc.SessionDir(); got != config.SessionDir() {
+		t.Fatalf("ACP orchestrator session dir = %q, want %q", got, config.SessionDir())
+	}
+
+	f.ReleaseSession(ctrl)
+	f.mu.Lock()
+	_, tracked := f.orcs[ctrl]
+	f.mu.Unlock()
+	if tracked {
+		t.Fatal("acpFactory still tracks the controller after ReleaseSession")
+	}
+
+	f.ReleaseSession(ctrl) // releasing an untracked controller is a no-op
 }

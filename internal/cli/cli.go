@@ -231,6 +231,90 @@ func setupQuiet(ctx context.Context, modelName string, maxStepsOverride int, req
 	})
 }
 
+// wireOrchestrator builds the managed child agents configured under
+// [orchestrator] and registers the agent_* delegation tools on ctrl. Each child
+// is an independent boot.Build controller (its own model, tool registry, and
+// session) scoped by AgentName; children never see the agent_* meta-tools, so
+// orchestration cannot nest. Returns nil when no agents are configured (or cfg
+// is nil), so headless entry points share the same wiring as the chat REPL.
+//
+// workspaceRoot roots each child's boot.Build; pass "" to inherit the process
+// cwd resolution used by the CLI entry points. sessionDir is where child
+// sessions persist (resolveCLISessionDir() for CLI, config.SessionDir() for ACP
+// so child transcripts sit next to the ACP session sidecars).
+func wireOrchestrator(ctx context.Context, cfg *config.Config, ctrl *control.Controller, sink event.Sink, maxSteps int, workspaceRoot, sessionDir string) *orchestrator.Orchestrator {
+	if cfg == nil || len(cfg.Orchestrator.Agents) == 0 {
+		return nil
+	}
+	orc := orchestrator.New(sink)
+	orc.SetMainCtrl(ctrl)
+
+	for _, entry := range cfg.Orchestrator.Agents {
+		modelName := entry.Model
+		if modelName == "" {
+			modelName = cfg.DefaultModel
+		}
+		entryPrompt, pErr := entry.ResolveSystemPrompt()
+		if pErr != nil {
+			fmt.Fprintln(os.Stderr, "orchestrator: agent", entry.Name+":", pErr)
+			continue
+		}
+		agentSink := orchestrator.NewSinkMultiplexer(sink, entry.Name)
+		agentSink.SetVerbose(entry.Verbose)
+		denylist := orchestrator.OrchestratorToolNames()
+		childCtrl, cerr := boot.Build(ctx, boot.Options{
+			Model:                modelName,
+			AgentName:            entry.Name,
+			MaxSteps:             maxSteps,
+			Sink:                 agentSink,
+			SystemPrompt:         entryPrompt,
+			ToolDenylist:         denylist,
+			InheritProjectMemory: entry.InheritProjectMemory,
+			WorkspaceRoot:        workspaceRoot,
+		})
+		if cerr != nil {
+			fmt.Fprintln(os.Stderr, "orchestrator: failed to start agent", entry.Name+":", cerr)
+			continue
+		}
+		orc.AddAgent(entry.Name, childCtrl, entry, agentSink)
+	}
+	orc.SetSessionDir(sessionDir)
+	if err := orc.LoadSessions(sessionDir); err != nil {
+		fmt.Fprintln(os.Stderr, "orchestrator: load sessions:", err)
+	}
+
+	for _, t := range orchestrator.OrchestratorTools(orc) {
+		ctrl.Registry().Add(t)
+	}
+
+	// If a git child agent is configured, wrap the bash tool to intercept
+	// git commands and redirect them to the git agent.
+	if orc.HasAgent("git") {
+		if bashTool, ok := ctrl.Registry().Get("bash"); ok {
+			ctrl.Registry().Remove("bash")
+			ctrl.Registry().Add(&orchestrator.NoGitBash{
+				Inner:   bashTool,
+				Orc:     orc,
+				GitName: "git",
+			})
+		}
+	}
+
+	// Make agent_spawn and agent_send available in plan mode so the main
+	// agent can delegate to child agents (e.g. git) while planning, rather
+	// than being stuck with no allowed writer or delegation tool.
+	allowed := cfg.Agent.PlanModeAllowedTools
+	merged := make([]string, 0, len(allowed)+2)
+	merged = append(merged, allowed...)
+	merged = append(merged, "agent_spawn", "agent_send")
+	ctrl.SetPlanModeAllowedTools(merged)
+
+	if names := orc.AgentNames(); len(names) > 0 {
+		fmt.Fprintf(os.Stderr, "orchestrator: %d managed agent(s) — %s\n", len(names), strings.Join(names, ", "))
+	}
+	return orc
+}
+
 // chdirTo honours --dir: it switches the working directory before anything reads
 // it, so config discovery, the sandbox root, and file tools all resolve from the
 // chosen project root. Returns 2 (already reported) on failure, 0 otherwise.
@@ -377,6 +461,18 @@ func runAgent(args []string) int {
 		ctrl.SetSessionPath(agent.NewSessionPath(ctrl.SessionDir(), ctrl.Label()))
 	}
 
+	// Wire [orchestrator] child agents so the main agent can delegate via
+	// agent_spawn / agent_send in a headless run too. Cleanup runs before the
+	// earlier defer ctrl.Close() (LIFO): persist child sessions, then close the
+	// child controllers.
+	orc := wireOrchestrator(ctx, cfg, ctrl, sink, *maxSteps, "", resolveCLISessionDir())
+	defer func() {
+		if orc != nil {
+			_ = orc.SaveSessions(resolveCLISessionDir())
+			orc.Close()
+		}
+	}()
+
 	runErr := ctrl.Run(ctx, prompt)
 	if cfg != nil {
 		notify.SendEvent(newNotificationSender(), cfg.Notifications, event.Event{Kind: event.TurnDone, Err: runErr})
@@ -515,74 +611,7 @@ func chatREPL(args []string) int {
 		return 1
 	}
 
-	var orc *orchestrator.Orchestrator
-	if cfg != nil && len(cfg.Orchestrator.Agents) > 0 {
-		orc = orchestrator.New(sink)
-		orc.SetMainCtrl(ctrl)
-
-		for _, entry := range cfg.Orchestrator.Agents {
-			modelName := entry.Model
-			if modelName == "" {
-				modelName = cfg.DefaultModel
-			}
-			entryPrompt, pErr := entry.ResolveSystemPrompt()
-			if pErr != nil {
-				fmt.Fprintln(os.Stderr, "orchestrator: agent", entry.Name+":", pErr)
-				continue
-			}
-			agentSink := orchestrator.NewSinkMultiplexer(sink, entry.Name)
-			agentSink.SetVerbose(entry.Verbose)
-			denylist := orchestrator.OrchestratorToolNames()
-			childCtrl, cerr := boot.Build(ctx, boot.Options{
-				Model:                 modelName,
-				AgentName:             entry.Name,
-				MaxSteps:              *maxSteps,
-				Sink:                  agentSink,
-				SystemPrompt:          entryPrompt,
-				ToolDenylist:          denylist,
-				InheritProjectMemory:  entry.InheritProjectMemory,
-			})
-			if cerr != nil {
-				fmt.Fprintln(os.Stderr, "orchestrator: failed to start agent", entry.Name+":", cerr)
-				continue
-			}
-			orc.AddAgent(entry.Name, childCtrl, entry, agentSink)
-		}
-		orc.SetSessionDir(resolveCLISessionDir())
-		if err := orc.LoadSessions(resolveCLISessionDir()); err != nil {
-			fmt.Fprintln(os.Stderr, "orchestrator: load sessions:", err)
-		}
-
-		for _, t := range orchestrator.OrchestratorTools(orc) {
-			ctrl.Registry().Add(t)
-		}
-
-		// If a git child agent is configured, wrap the bash tool to intercept
-		// git commands and redirect them to the git agent.
-		if orc.HasAgent("git") {
-			if bashTool, ok := ctrl.Registry().Get("bash"); ok {
-				ctrl.Registry().Remove("bash")
-				ctrl.Registry().Add(&orchestrator.NoGitBash{
-					Inner:   bashTool,
-					Orc:     orc,
-					GitName: "git",
-				})
-			}
-		}
-
-		// Make agent_spawn and agent_send available in plan mode so the main
-		// agent can delegate to child agents (e.g. git) while planning, rather
-		// than being stuck with no allowed writer or delegation tool.
-		allowed := cfg.Agent.PlanModeAllowedTools
-		merged := make([]string, 0, len(allowed)+2)
-		merged = append(merged, allowed...)
-		merged = append(merged, "agent_spawn", "agent_send")
-		ctrl.SetPlanModeAllowedTools(merged)
-
-		if names := orc.AgentNames(); len(names) > 0 {
-			fmt.Fprintf(os.Stderr, "orchestrator: %d managed agent(s) — %s\n", len(names), strings.Join(names, ", "))
-		}
-	}
+	orc := wireOrchestrator(ctx, cfg, ctrl, sink, *maxSteps, "", resolveCLISessionDir())
 
 	// Decide where this conversation's auto-save lands. A resume reuses the
 	// file so closing/reopening keeps appending to the same history; a fresh

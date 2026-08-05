@@ -52,6 +52,15 @@ type Factory interface {
 	NewSession(ctx context.Context, p SessionParams) (*control.Controller, error)
 }
 
+// SessionReleaser lets a Factory release per-session resources attached to a
+// controller — for example an orchestrator with its own child controllers —
+// when the ACP session is torn down (session/close, session/delete, connection
+// end, or a model/effort rebuild). The service calls ReleaseSession for every
+// controller the Factory built, before the controller's own Close runs.
+type SessionReleaser interface {
+	ReleaseSession(ctrl *control.Controller)
+}
+
 // SessionConfigStateParams asks the Factory for normalized session config
 // selectors. Empty Model means the Factory should use its configured default.
 // Nil EffortOverride means provider config wins; a non-nil empty string means
@@ -335,6 +344,8 @@ func (s *service) sessionNew(ctx context.Context, raw json.RawMessage) (any, err
 	s.mu.Unlock()
 	s.sendAvailableCommands(sess)
 
+	stampToolApproval(&cfgState, ctrl.ToolApprovalMode())
+
 	return SessionNewResult{
 		SessionID:     id,
 		Models:        cfgState.Models,
@@ -443,16 +454,19 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 
 	dir := ctrl.SessionDir()
 	if dir == "" {
+		s.releaseSession(ctrl)
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": persistence is disabled"}
 	}
 	path := transcriptPath(dir, id)
 	if path != persistedPath && agent.IsCleanupPending(path) {
+		s.releaseSession(ctrl)
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
 	}
 	loaded, err := agent.LoadSession(path)
 	if err != nil {
+		s.releaseSession(ctrl)
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
 	}
@@ -475,6 +489,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 		updatedAt:      meta.UpdatedAt,
 	}
 	if err := saveACPMeta(path, sess.meta()); err != nil {
+		s.releaseSession(ctrl)
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": " + err.Error()}
 	}
@@ -486,6 +501,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	if replay {
 		sink.replay(ctrl.History())
 	}
+	stampToolApproval(&cfgState, ctrl.ToolApprovalMode())
 	return cfgState, nil
 }
 
@@ -550,7 +566,7 @@ func (s *service) sessionPrompt(ctx context.Context, raw json.RawMessage) (any, 
 }
 
 // sessionSetConfigOption applies ACP's generic session-level selector. Reasonix
-// currently exposes model and reasoning-effort selectors through this path.
+// exposes model, reasoning-effort, and tool-approval selectors through this path.
 func (s *service) sessionSetConfigOption(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p SetSessionConfigOptionParams
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -578,6 +594,8 @@ func (s *service) sessionSetConfigOption(ctx context.Context, raw json.RawMessag
 		next, err = s.switchSessionModel(ctx, sess, p.Value)
 	case "thought_level":
 		next, err = s.switchSessionEffort(ctx, sess, p.Value)
+	case "tool_approval":
+		next, err = s.switchToolApproval(ctx, sess, p.Value)
 	default:
 		err = &RPCError{Code: ErrInvalidParams, Message: "session/set_config_option: unsupported config option " + option.ID}
 	}
@@ -635,6 +653,35 @@ func (s *service) switchSessionEffort(ctx context.Context, sess *acpSession, eff
 		return SessionConfigState{}, err
 	}
 	return cfgState, nil
+}
+
+// switchToolApproval flips the session's live tool-approval posture in place
+// (ask|auto|yolo). Unlike model/effort it needs no rebuild: the controller
+// re-installs its interactive gate on the fly and returns the refreshed config
+// state so the host sees the new CurrentValue.
+func (s *service) switchToolApproval(ctx context.Context, sess *acpSession, value string) (SessionConfigState, error) {
+	mode := control.NormalizeToolApprovalMode(value)
+	sess.ctrl.SetToolApprovalMode(mode)
+	params := sess.configStateParams()
+	params.EffortOverride = cloneStringPtr(sess.effortOverride)
+	cfgState, err := s.sessionConfigState(ctx, params)
+	if err != nil {
+		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: "session/set_config_option: " + err.Error()}
+	}
+	stampToolApproval(&cfgState, sess.ctrl.ToolApprovalMode())
+	return cfgState, nil
+}
+
+// stampToolApproval rewrites the tool_approval option's CurrentValue to live.
+// It's a no-op when the option isn't advertised, so it's safe on any config
+// state that this package builds.
+func stampToolApproval(cfgState *SessionConfigState, live string) {
+	for i := range cfgState.ConfigOptions {
+		if cfgState.ConfigOptions[i].ID == "tool_approval" {
+			cfgState.ConfigOptions[i].CurrentValue = control.NormalizeToolApprovalMode(live)
+			return
+		}
+	}
 }
 
 func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState SessionConfigState) error {
@@ -697,6 +744,7 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	}
 	sess.mu.Unlock()
 
+	s.releaseSession(cur)
 	cur.ReleaseResources()
 	s.sendAvailableCommands(sess)
 	sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
@@ -744,6 +792,7 @@ func (s *service) sessionClose(_ context.Context, raw json.RawMessage) (any, err
 			slog.Warn("acp: session/close snapshot", "session", sess.id, "err", err)
 		}
 		sess.abortAndWait()
+		s.releaseSession(sess.ctrl)
 		sess.ctrl.Close()
 	}
 	return SessionCloseResult{}, nil
@@ -817,6 +866,7 @@ func (s *service) sessionDelete(_ context.Context, raw json.RawMessage) (any, er
 	var delayed bool
 	if sess := s.takeSession(p.SessionID); sess != nil {
 		sess.deleteAndWait()
+		s.releaseSession(sess.ctrl)
 		path = sess.transcript
 		destroy = sess.ctrl.BeginDestroySession(path)
 		if result := destroy.Wait(); result.HasTimedOut() {
@@ -896,6 +946,19 @@ func (s *service) sessionDir() string {
 		}
 	}
 	return ""
+}
+
+// releaseSession hands a factory-built controller back to the Factory so it can
+// tear down per-session resources (e.g. an orchestrator) before the service
+// closes the controller itself. Factories that implement SessionReleaser get
+// called for every controller they built; others are unaffected.
+func (s *service) releaseSession(ctrl *control.Controller) {
+	if ctrl == nil {
+		return
+	}
+	if r, ok := s.factory.(SessionReleaser); ok {
+		r.ReleaseSession(ctrl)
+	}
 }
 
 func (s *service) sessionConfigState(ctx context.Context, p SessionConfigStateParams) (SessionConfigState, error) {
@@ -1043,6 +1106,7 @@ func (s *service) closeAll() {
 			slog.Warn("acp: closeAll snapshot", "session", sess.id, "err", err)
 		}
 		sess.abortAndWait() // wait for in-flight turn to finish so persistAfterTurn completes
+		s.releaseSession(sess.ctrl)
 		sess.ctrl.Close()
 	}
 }

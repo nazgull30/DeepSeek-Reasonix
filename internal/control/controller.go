@@ -1681,6 +1681,13 @@ func normalizeToolApprovalMode(mode string) string {
 	}
 }
 
+// NormalizeToolApprovalMode is the exported form of normalizeToolApprovalMode,
+// so transports that accept a posture from outside (e.g. ACP config options)
+// share the same ask|auto|yolo spelling.
+func NormalizeToolApprovalMode(mode string) string {
+	return normalizeToolApprovalMode(mode)
+}
+
 func (c *Controller) newInteractiveGate() *permission.Gate {
 	policy := c.policy
 	c.mu.Lock()

@@ -719,19 +719,19 @@ type OrchestratorConfig struct {
 
 // OrchestratorAgentEntry defines one managed agent in the orchestrator team.
 type OrchestratorAgentEntry struct {
-	Name            string   `toml:"name"`
-	Model           string   `toml:"model"`
-	Ref             string   `toml:"ref"`
-	Skills          []string `toml:"skills"`
-	SkipSkills      []string `toml:"skip_skills"`
-	Paths           []string `toml:"paths"`
-	SystemPrompt    string   `toml:"system_prompt"`
-	SystemPromptFile string  `toml:"system_prompt_file"`
-	Persist         bool     `toml:"persist"`
-	Ephemeral       bool     `toml:"ephemeral"`
-	Verbose               bool     `toml:"verbose"`
-	InheritProjectMemory  *bool    `toml:"inherit_project_memory"`
-	Tools                 []string `toml:"tools"`
+	Name                 string   `toml:"name"`
+	Model                string   `toml:"model"`
+	Ref                  string   `toml:"ref"`
+	Skills               []string `toml:"skills"`
+	SkipSkills           []string `toml:"skip_skills"`
+	Paths                []string `toml:"paths"`
+	SystemPrompt         string   `toml:"system_prompt"`
+	SystemPromptFile     string   `toml:"system_prompt_file"`
+	Persist              bool     `toml:"persist"`
+	Ephemeral            bool     `toml:"ephemeral"`
+	Verbose              bool     `toml:"verbose"`
+	InheritProjectMemory *bool    `toml:"inherit_project_memory"`
+	Tools                []string `toml:"tools"`
 }
 
 // ResolveSystemPrompt returns the entry's system prompt, reading system_prompt_file if set.
@@ -857,6 +857,11 @@ type AgentConfig struct {
 	// the "plan mode is read-only" block. Use sparingly — prefer the built-in safe
 	// bash commands for read-only exploration.
 	PlanModeAllowedTools []string `toml:"plan_mode_allowed_tools"`
+	// ToolApprovalMode sets the default tool-approval posture for controllers
+	// that start interactive (e.g. ACP sessions): "ask" (default), "auto", or
+	// "yolo" (skips tool approvals). "ask" questions and plan approval still wait
+	// for the user; deny rules still block. Empty = ask.
+	ToolApprovalMode string `toml:"tool_approval_mode"`
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's
