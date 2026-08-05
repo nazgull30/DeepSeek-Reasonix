@@ -256,6 +256,67 @@ func writeBranchMeta(t *testing.T, path string, createdAt, updatedAt time.Time) 
 	}
 }
 
+// TestListingsIncludeInterruptedSession verifies that a session whose last
+// message is the continuation marker (an explicitly cancelled turn with no
+// model reply yet) appears in /resume and /tree listings, while a plain
+// orphaned-prompt session stays hidden.
+func TestListingsIncludeInterruptedSession(t *testing.T) {
+	dir := t.TempDir()
+	interruptedPath := filepath.Join(dir, "interrupted.jsonl")
+	orphanPath := filepath.Join(dir, "orphan.jsonl")
+
+	interrupted := NewSession("sys")
+	interrupted.Add(provider.Message{Role: provider.RoleUser, Content: "build the feature"})
+	interrupted.Add(provider.Message{Role: provider.RoleUser, Content: InterruptedTurnContinueMessage})
+	if err := interrupted.Save(interruptedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	orphan := NewSession("sys")
+	orphan.Add(provider.Message{Role: provider.RoleUser, Content: "orphaned prompt"})
+	if err := orphan.Save(orphanPath); err != nil {
+		t.Fatal(err)
+	}
+
+	sessions, err := ListSessions(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Path != interruptedPath {
+		t.Fatalf("ListSessions = %+v, want only the interrupted session", sessions)
+	}
+	if turns := sessions[0].Turns; turns != 1 {
+		t.Fatalf("interrupted session turns = %d, want 1 (marker excluded)", turns)
+	}
+
+	branches, err := ListBranches(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) != 1 || branches[0].Path != interruptedPath {
+		t.Fatalf("ListBranches = %+v, want only the interrupted session", branches)
+	}
+}
+
+func TestSessionPreviewSkipsInterruptedMarker(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "first task"},
+		{Role: provider.RoleAssistant, Content: "done"},
+		{Role: provider.RoleUser, Content: InterruptedTurnContinueMessage},
+	}
+	preview, turns := SessionPreviewFromMessages(msgs)
+	if turns != 1 {
+		t.Fatalf("turns = %d, want 1 (marker must not inflate the count)", turns)
+	}
+	if preview != "first task" {
+		t.Fatalf("preview = %q, want %q", preview, "first task")
+	}
+
+	if got := MessagesHaveReply(msgs); !got {
+		t.Fatal("MessagesHaveReply should be true (assistant reply present)")
+	}
+}
+
 func TestContinueSessionPathReusesPriorFile(t *testing.T) {
 	prev := filepath.Join("sessions", "20260602-120000.000000000-deepseek.jsonl")
 	if got := ContinueSessionPath(prev, "sessions", "other-model"); got != prev {

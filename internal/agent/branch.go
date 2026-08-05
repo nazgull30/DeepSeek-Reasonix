@@ -217,9 +217,11 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 		if !IsVisibleSession(path) {
 			continue
 		}
-		if !sessionHasReply(path) {
+		if !sessionHasReply(path) && !sessionIsInterrupted(path) {
 			// Only system/user messages (e.g. an interrupted or failed turn) —
 			// an "empty" session that should not appear in /tree or pickers.
+			// An explicitly cancelled turn ending with the continuation marker
+			// has no reply yet but is resumable, so it stays.
 			continue
 		}
 		preview, turns := previewSession(path)
