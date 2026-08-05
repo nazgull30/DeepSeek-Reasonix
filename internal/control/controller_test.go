@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1935,4 +1936,74 @@ func cmdNames(cmds []command.Command) []string {
 		names[i] = c.Name
 	}
 	return names
+}
+
+func TestDeleteSessionRemovesSavedSessionAndArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "active.jsonl")
+	saved := filepath.Join(dir, "saved.jsonl")
+	for _, p := range []string{active, saved} {
+		if err := os.WriteFile(p, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := agent.SaveBranchMeta(saved, agent.BranchMeta{Name: "saved"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(jobs.ArtifactDir(saved), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, SessionPath: active, Label: "test"})
+
+	if err := ctrl.DeleteSession(saved); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	for _, gone := range []string{saved, agent.BranchMetaPath(saved), jobs.ArtifactDir(saved)} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed, stat err = %v", gone, err)
+		}
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Fatalf("active session file removed unexpectedly: %v", err)
+	}
+}
+
+func TestDeleteSessionRefusesActiveSession(t *testing.T) {
+	dir := t.TempDir()
+	active := filepath.Join(dir, "active.jsonl")
+	if err := os.WriteFile(active, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, SessionPath: active, Label: "test"})
+
+	if err := ctrl.DeleteSession(active); !errors.Is(err, ErrSessionActive) {
+		t.Fatalf("DeleteSession(active) = %v, want ErrSessionActive", err)
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Fatalf("active session should be untouched: %v", err)
+	}
+}
+
+func TestDeleteSessionRefusesPathOutsideDir(t *testing.T) {
+	dir := t.TempDir()
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+
+	outside := filepath.Join(dir, "..", "escape.jsonl")
+	if err := ctrl.DeleteSession(outside); err == nil || !strings.Contains(err.Error(), "outside session dir") {
+		t.Fatalf("DeleteSession(outside) = %v, want 'outside session dir' error", err)
+	}
+}
+
+func TestDeleteSessionNotFound(t *testing.T) {
+	dir := t.TempDir()
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, Label: "test"})
+
+	if err := ctrl.DeleteSession(filepath.Join(dir, "missing.jsonl")); err == nil || !strings.Contains(err.Error(), "session not found") {
+		t.Fatalf("DeleteSession(missing) = %v, want 'session not found' error", err)
+	}
 }

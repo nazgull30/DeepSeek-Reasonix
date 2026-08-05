@@ -65,6 +65,7 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/new", insert: "/new ", hint: i18n.M.CmdNew},
 		{label: "/clear", insert: "/clear", hint: i18n.M.CmdClear},
 		{label: "/resume", insert: "/resume ", hint: i18n.M.CmdResume},
+		{label: "/session-delete", insert: "/session-delete ", hint: i18n.M.CmdSessionDelete},
 		{label: "/rename", insert: "/rename ", hint: i18n.M.CmdRename},
 		{label: "/rewind", insert: "/rewind", hint: i18n.M.CmdRewind},
 		{label: "/tree", insert: "/tree", hint: i18n.M.CmdTree},
@@ -173,6 +174,9 @@ func (m *chatTUI) slashArgItems(val string) ([]compItem, int, bool) {
 		return items, from, len(items) > 0
 	}
 	if items, from, ok := m.resumeArgItems(val); ok {
+		return items, from, len(items) > 0
+	}
+	if items, from, ok := m.sessionDeleteArgItems(val); ok {
 		return items, from, len(items) > 0
 	}
 	if items, from, ok := m.themeArgItems(val); ok {

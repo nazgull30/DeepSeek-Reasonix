@@ -243,6 +243,12 @@ type chatTUI struct {
 	// from /new because /clear discards the current transcript instead of saving it.
 	clearConfirm *clearConfirm
 
+	// sessionDeletePick is the interactive "/session-delete" picker overlay;
+	// Enter moves to the destructive confirmation instead of deleting directly.
+	sessionDeletePick *sessionDeletePicker
+	// deleteConfirm confirms a pending "/session-delete" selection.
+	deleteConfirm *deleteConfirm
+
 	// lastCtrlCAt records when Ctrl+C was pressed while idle on an empty
 	// composer, enabling a "press again to quit" confirmation pattern (1.5s
 	// window). Reset when Ctrl+C clears non-empty input instead.
@@ -959,6 +965,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.resumePick != nil {
 			return m.handleResumePickerKey(msg)
 		}
+		// The session-delete picker is modal while open: keys navigate it.
+		if m.sessionDeletePick != nil {
+			return m.handleSessionDeletePickerKey(msg)
+		}
 		// The MCP manager is modal while open: keys navigate it.
 		if m.mcp != nil {
 			return m.handleMCPManagerKey(msg)
@@ -966,6 +976,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The destructive /clear confirmation is modal while open.
 		if m.clearConfirm != nil {
 			return m.handleClearConfirmKey(msg)
+		}
+		// The destructive /session-delete confirmation is modal while open.
+		if m.deleteConfirm != nil {
+			return m.handleDeleteConfirmKey(msg)
 		}
 		// The skill picker is modal while open: keys navigate it.
 		if m.skillPick != nil {
@@ -1564,6 +1578,8 @@ func (m chatTUI) bottomRows() int {
 		m.renderRewind(),
 		m.renderMCPImport(),
 		m.renderResumePicker(),
+		m.renderSessionDeletePicker(),
+		m.renderDeleteConfirm(),
 		m.renderCopyPicker(),
 		m.renderCompletion(),
 	} {
@@ -1605,7 +1621,7 @@ func (m chatTUI) bottomRows() int {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
-	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.copyPick != nil || m.rewind != nil || m.pendingApproval != nil {
+	if m.mcp != nil || m.clearConfirm != nil || m.deleteConfirm != nil || m.sessionDeletePick != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.copyPick != nil || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
 	return m.chooser != nil && !m.chooser.typing
@@ -1625,6 +1641,9 @@ func (m chatTUI) renderMainManager() string {
 		return card
 	}
 	if card := m.renderClearConfirm(); card != "" {
+		return card
+	}
+	if card := m.renderDeleteConfirm(); card != "" {
 		return card
 	}
 	return m.renderSkillPicker()
@@ -1649,6 +1668,8 @@ func (m chatTUI) renderMainManagerFooter() string {
 		hint = m.mcp.footerHint()
 	case m.clearConfirm != nil:
 		hint = "Enter confirm · y clear · n/Esc cancel"
+	case m.deleteConfirm != nil:
+		hint = "Enter confirm · y delete · n/Esc cancel"
 	case m.skillPick != nil:
 		hint = m.skillPickerFooterHint()
 	}
@@ -2313,6 +2334,10 @@ func (m chatTUI) View() tea.View {
 		status = "  " + modeTag + " · MCP import"
 	case m.resumePick != nil:
 		status = "  " + modeTag + " · " + i18n.M.StatusResumePicker
+	case m.sessionDeletePick != nil:
+		status = "  " + modeTag + " · " + i18n.M.StatusSessionDeletePicker
+	case m.deleteConfirm != nil:
+		status = "  " + modeTag + " · " + i18n.M.StatusSessionDeletePicker
 	case m.mcp != nil:
 		status = "  " + modeTag + " · MCP"
 	case m.skillPick != nil:
@@ -2413,6 +2438,14 @@ func (m chatTUI) View() tea.View {
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
 	if card := m.renderResumePicker(); card != "" {
+		parts = append(parts, card)
+		rowsAboveBox += strings.Count(card, "\n") + 1
+	}
+	if card := m.renderSessionDeletePicker(); card != "" {
+		parts = append(parts, card)
+		rowsAboveBox += strings.Count(card, "\n") + 1
+	}
+	if card := m.renderDeleteConfirm(); card != "" {
 		parts = append(parts, card)
 		rowsAboveBox += strings.Count(card, "\n") + 1
 	}
@@ -2847,6 +2880,10 @@ func (m chatTUI) computeStatusLineCount(width int) int {
 		status += " · MCP import"
 	case m.resumePick != nil:
 		status += " · " + i18n.M.StatusResumePicker
+	case m.sessionDeletePick != nil:
+		status += " · " + i18n.M.StatusSessionDeletePicker
+	case m.deleteConfirm != nil:
+		status += " · " + i18n.M.StatusSessionDeletePicker
 	case m.mcp != nil:
 		status += " · MCP"
 	case m.skillPick != nil:
@@ -3673,6 +3710,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.clearConfirm = &clearConfirm{confirm: 1}
 	case "/resume":
 		m.runResumeCommand(input)
+	case "/session-delete":
+		m.echoLocalCommand(input)
+		m.runSessionDeleteCommand(input)
 	case "/rename":
 		m.runRenameCommand(input)
 	case "/todo":
@@ -3809,23 +3849,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			m.notice("usage: /agent_clear <name>")
 			break
 		}
-		a, ok := m.orc.Agent(name)
-		if !ok {
-			m.notice(fmt.Sprintf("agent %q not found", name))
-			break
-		}
-		oldPath := a.Ctrl.SessionPath()
-		if err := a.Ctrl.NewSession(); err != nil {
+		if err := m.clearAgentSession(name); err != nil {
 			m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
 			break
-		}
-		if oldPath != "" {
-			os.Remove(oldPath)
-			os.Remove(oldPath + ".meta")
-		}
-		dir := m.orc.SessionDir()
-		if dir != "" {
-			a.Ctrl.SetSessionPath(filepath.Join(dir, "orchestrator_"+name+".jsonl"))
 		}
 		m.notice(fmt.Sprintf("%s cleared", name))
 	case "/agent_spawn":

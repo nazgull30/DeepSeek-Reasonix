@@ -60,6 +60,13 @@ var ErrTurnRunning = errors.New("turn already running")
 // (#4414). Callers log it and continue; it must never be swallowed quietly.
 var errNoSessionPath = errors.New("session has content but no session path; conversation cannot be persisted")
 
+// ErrSessionActive is returned by DeleteSession when the target is the
+// controller's own active session — /clear is the intended way to discard it.
+var ErrSessionActive = errors.New("cannot delete the active session")
+
+// ErrSessionRunning is returned by DeleteSession when a turn is in flight.
+var ErrSessionRunning = errors.New("cannot delete a session while a turn is running")
+
 // Controller drives one chat session. Construct with New; drive with the command
 // methods; observe through the Sink passed in Options.
 type Controller struct {
@@ -2064,11 +2071,84 @@ func (c *Controller) ClearSession() error {
 	return nil
 }
 
+// DeleteSession removes a saved (non-active) session from disk, including its
+// branch sidecars, checkpoint dir, subagent sessions, and background-job
+// artifacts. The session must not be the controller's active one (use
+// ClearSession for that) and no turn may be in flight. The target is confined
+// to the controller's session directory to prevent path traversal.
+func (c *Controller) DeleteSession(sessionPath string) error {
+	if c.sessionDir == "" {
+		return fmt.Errorf("sessions disabled")
+	}
+	if c.Running() {
+		return ErrSessionRunning
+	}
+	dir, err := filepath.Abs(c.sessionDir)
+	if err != nil {
+		return fmt.Errorf("resolve session dir: %w", err)
+	}
+	abs, err := filepath.Abs(sessionPath)
+	if err != nil {
+		return fmt.Errorf("resolve session path: %w", err)
+	}
+	rel, err := filepath.Rel(dir, abs)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("session path outside session dir")
+	}
+	if filepath.Clean(abs) == filepath.Clean(c.SessionPath()) {
+		return ErrSessionActive
+	}
+	if _, err := os.Stat(abs); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("session not found")
+		}
+		return err
+	}
+	if c.hasUnfinishedSessionJobs(abs) {
+		if err := agent.MarkCleanupPending(abs, "delete"); err != nil {
+			return err
+		}
+	}
+	destroy := c.BeginDestroySession(abs)
+	if !destroy.Async {
+		if err := removeSessionArtifacts(abs); err != nil {
+			destroy.Finish()
+			return err
+		}
+		destroy.Finish()
+		return nil
+	}
+	go func() {
+		result := destroy.Wait()
+		if result.HasTimedOut() && destroy.WaitAll != nil {
+			if err := agent.MarkCleanupPending(abs, "delete"); err != nil {
+				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "mark cleanup pending failed: " + err.Error()})
+			}
+			destroy.WaitAll()
+		}
+		if err := removeSessionArtifacts(abs); err != nil {
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "delete session cleanup failed: " + err.Error()})
+		}
+		destroy.Finish()
+	}()
+	return nil
+}
+
 func (c *Controller) hasUnfinishedSessionJobs(sessionPath string) bool {
 	if c.jobs == nil {
 		return false
 	}
 	return c.jobs.HasUnfinishedForSession(agent.BranchID(sessionPath))
+}
+
+// DeleteSessionArtifacts physically removes every on-disk artifact belonging to
+// a session that is no longer the controller's active one: the transcript file,
+// branch sidecar, checkpoint dir, subagent sessions, and background-job
+// artifacts. The CLI uses it to purge an orchestrator child's session after
+// rotating the child to a fresh in-memory session (the child controller itself
+// would refuse DeleteSession on its own active path).
+func DeleteSessionArtifacts(path string) error {
+	return removeSessionArtifacts(path)
 }
 
 func removeSessionArtifacts(path string) error {

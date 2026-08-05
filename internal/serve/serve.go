@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -24,7 +25,6 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
-	"reasonix/internal/jobs"
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 )
@@ -951,80 +951,22 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := filepath.Join(dir, name+".jsonl")
-	abs, err := filepath.Abs(target)
-	if err != nil {
-		http.Error(w, "invalid session path", http.StatusBadRequest)
-		return
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		http.Error(w, "invalid session dir", http.StatusBadRequest)
-		return
-	}
-	rel, err := filepath.Rel(absDir, abs)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		http.Error(w, "path outside session dir", http.StatusForbidden)
-		return
-	}
-	if filepath.Clean(abs) == filepath.Clean(s.ctl().SessionPath()) {
-		http.Error(w, "cannot delete active session", http.StatusConflict)
-		return
-	}
-	destroy := s.ctl().BeginDestroySession(abs)
-	if result := finishSessionDestroy(destroy); result.HasTimedOut() {
-		if err := agent.MarkCleanupPending(abs, "delete"); err != nil {
-			go delayedSessionDelete(absDir, abs, destroy)
+	if err := s.ctl().DeleteSession(target); err != nil {
+		switch {
+		case errors.Is(err, control.ErrSessionActive):
+			http.Error(w, "cannot delete active session", http.StatusConflict)
+		case errors.Is(err, control.ErrSessionRunning):
+			http.Error(w, "cannot delete session while a turn is running", http.StatusConflict)
+		case strings.Contains(err.Error(), "outside session dir"):
+			http.Error(w, "path outside session dir", http.StatusForbidden)
+		case strings.Contains(err.Error(), "session not found"):
+			http.Error(w, "session not found", http.StatusNotFound)
+		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
 		}
-		go delayedSessionDelete(absDir, abs, destroy)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := removeSessionFiles(absDir, abs); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func finishSessionDestroy(destroy control.SessionDestroyHandle) jobs.TeardownResult {
-	if destroy.Wait != nil {
-		result := destroy.Wait()
-		if destroy.Finish != nil && !result.HasTimedOut() {
-			destroy.Finish()
-		}
-		return result
-	}
-	if destroy.Finish != nil {
-		destroy.Finish()
-	}
-	return jobs.TeardownResult{}
-}
-
-func delayedSessionDelete(absDir, abs string, destroy control.SessionDestroyHandle) {
-	if destroy.WaitAll != nil {
-		destroy.WaitAll()
-	}
-	if err := removeSessionFiles(absDir, abs); err != nil {
-		slog.Warn("serve: delayed session delete failed", "path", abs, "err", err)
-	}
-	if destroy.Finish != nil {
-		destroy.Finish()
-	}
-}
-
-func removeSessionFiles(absDir, abs string) error {
-	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	if err := agent.DeleteSubagentsByParent(absDir, agent.BranchID(abs)); err != nil {
-		return err
-	}
-	if err := jobs.RemoveArtifacts(abs); err != nil {
-		return err
-	}
-	return agent.ClearCleanupPending(abs)
 }
 
 // sessionTitle returns a title for a session: the cached flash-generated title
