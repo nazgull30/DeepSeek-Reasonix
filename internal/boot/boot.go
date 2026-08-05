@@ -105,6 +105,13 @@ type Options struct {
 	// plugins, and skills are registered. Used to prevent managed agents from
 	// exposing orchestrator meta-tools or other unwanted capabilities.
 	ToolDenylist []string
+	// ToolAllowlist, when non-empty, removes every tool that matches none of the
+	// patterns after all built-ins, plugins, and skills are registered. Patterns
+	// follow the same glob semantics as the permission allow rules ('*' matches
+	// any run of characters, including '/'). Used to give orchestrator child
+	// agents a strict, minimal tool surface (e.g. only allowlisted MCP tools plus
+	// bash). An empty list keeps everything, preserving backward compatibility.
+	ToolAllowlist []string
 	// InheritProjectMemory controls whether project memory (REASONIX.md /
 	// AGENTS.md hierarchy) is composed into the system prompt. nil means inherit
 	// (default, backward compatible); false means skip. Only meaningful when
@@ -475,6 +482,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// (background). Both share the same pluginHost so /mcp status, hot-add,
 	// and Close see one cohesive set of servers regardless of tier.
 	registerDeferred := func(specs []plugin.Spec, kick bool) {
+		// ToolFilter keeps a per-agent ToolAllowlist/ToolDenylist in force
+		// across the placeholder→real swap: without it, lazy/background MCP
+		// servers would re-install their full toolset on first spawn, undoing
+		// the allowlist trimming done by the strict filter below.
+		toolFilter := func(name string) bool {
+			return toolAllowed(name, opts.ToolAllowlist, opts.ToolDenylist)
+		}
 		for _, s := range specs {
 			if !agentAllowedPlugins[s.Name] {
 				// Not visible to this agent. Still kick if the spec asked
@@ -507,12 +521,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				// every workspace root on boot — a tab that sits unused for
 				// days never pays the startup cost.
 				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
-				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, false) {
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, false, toolFilter) {
 					reg.Add(t)
 				}
 			} else {
 				cs, _ := plugin.LoadCachedSchema(s.Name, plugin.SpecFingerprint(s))
-				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick) {
+				for _, t := range plugin.LazyToolset(s, cs, pluginHost, reg, ctx, kick, toolFilter) {
 					reg.Add(t)
 				}
 			}
@@ -1042,6 +1056,14 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		reg.Remove(name)
 	}
 
+	if len(opts.ToolAllowlist) > 0 {
+		for _, name := range reg.Names() {
+			if !toolMatchesAny(name, opts.ToolAllowlist) {
+				reg.Remove(name)
+			}
+		}
+	}
+
 	ctrlOpts := control.Options{
 		Runner:                 runner,
 		Executor:               executor,
@@ -1378,6 +1400,35 @@ func pluginToolAllowed(toolName string, allowedPlugins map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// toolMatchesAny reports whether name matches at least one pattern using the
+// same glob semantics as the permission allow rules: '*' matches any run of
+// characters (including '/'), '?' matches exactly one. Empty patterns never
+// match, so a single empty entry yields an empty tool surface.
+func toolMatchesAny(name string, patterns []string) bool {
+	for _, p := range patterns {
+		if permission.MatchGlob(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// toolAllowed reports whether name passes both the per-agent allowlist and
+// denylist. An empty allowlist permits everything; a non-empty one is strict
+// (name must match at least one pattern). The denylist always wins. Shared by
+// the boot-time strict trim and the lazy-spawn swap filter so a per-agent
+// allowlist cannot be bypassed when an MCP server's real toolset is installed
+// after the first spawn.
+func toolAllowed(name string, allowlist, denylist []string) bool {
+	if len(allowlist) > 0 && !toolMatchesAny(name, allowlist) {
+		return false
+	}
+	if len(denylist) > 0 && toolMatchesAny(name, denylist) {
+		return false
+	}
+	return true
 }
 
 func builtinToolEnabled(enabled []string, name string) bool {

@@ -107,7 +107,7 @@ func TestLazyCacheHitSyncSpawn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	if len(tools) != 2 {
 		t.Fatalf("LazyToolset returned %d tools, want 2 (echo + zed)", len(tools))
 	}
@@ -176,7 +176,7 @@ func TestLazyCacheHitReusesExistingSharedHostClient(t *testing.T) {
 		t.Fatalf("preconnect shared host: %v", err)
 	}
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -255,7 +255,7 @@ func TestLazyCacheHitStartupTimeoutCanRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -300,7 +300,7 @@ func TestLazyToolsetAppliesSpecReadOnlyOverrideToCachedTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	byName := map[string]tool.Tool{}
 	for _, tl := range tools {
 		byName[tl.Name()] = tl
@@ -337,7 +337,7 @@ func TestLazyCacheMissAsyncSpawn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, nil, host, reg, ctx, false)
+	tools := LazyToolset(spec, nil, host, reg, ctx, false, nil)
 	if len(tools) != 1 {
 		t.Fatalf("cache-miss LazyToolset must return 1 connect stub, got %d", len(tools))
 	}
@@ -391,7 +391,7 @@ func TestLazySwapDoesNotRaceRegistrySchemas(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -443,7 +443,7 @@ func TestLazyBackgroundKick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, true) // kick=true
+	tools := LazyToolset(spec, cs, host, reg, ctx, true, nil) // kick=true
 	if len(tools) != 2 {
 		t.Fatalf("LazyToolset(kick=true) returned %d tools, want 2", len(tools))
 	}
@@ -473,6 +473,53 @@ func TestLazyBackgroundKick(t *testing.T) {
 	}
 }
 
+// TestLazySwapAppliesToolFilter is the regression test for the per-agent
+// ToolAllowlist bypass: boot trims disallowed placeholders with a strict
+// filter, then the background/lazy spawn later installs the server's *full*
+// real toolset. trySwap must re-apply the filter, otherwise every disallowed
+// tool (e.g. all 110 gitlab tools minus the ~38 allowlisted ones) floods back
+// into the child agent's registry after the first spawn.
+func TestLazySwapAppliesToolFilter(t *testing.T) {
+	redirectCache(t)
+	spec := helperSpec()
+	writeMockCache(t, spec)
+	cs, _ := LoadCachedSchema(spec.Name, SpecFingerprint(spec))
+
+	host := NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	filter := func(name string) bool { return name == "mcp__mock__echo" }
+	tools := LazyToolset(spec, cs, host, reg, ctx, true, filter) // kick=true
+	if len(tools) != 2 {
+		t.Fatalf("LazyToolset returned %d placeholders, want 2", len(tools))
+	}
+	for _, lt := range tools {
+		reg.Add(lt)
+	}
+	// Simulate the boot-time strict allowlist trim of the disallowed
+	// placeholder (boot.go removes non-matching names after registration).
+	reg.Remove("mcp__mock__zed")
+
+	// Background spawn completes → trySwap installs real tools. Block until the
+	// swap definitely ran: saveLazyCachedSchema happens after trySwap in run().
+	waitForServer(t, host, "mock", 5*time.Second)
+	waitForCachedSchema(t, spec, 5*time.Second)
+
+	if _, ok := reg.Get("mcp__mock__echo"); !ok {
+		t.Fatal("allowlisted mcp__mock__echo missing after background swap")
+	}
+	if _, ok := reg.Get("mcp__mock__zed"); ok {
+		t.Fatal("filtered mcp__mock__zed resurrected by trySwap after background spawn")
+	}
+	// The spawn itself still happened — only the disallowed tool was dropped.
+	if names := host.ServerNames(); len(names) != 1 {
+		t.Fatalf("host.ServerNames() = %v, want exactly one 'mock'", names)
+	}
+}
+
 func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
 	redirectCache(t)
 	spec := helperSpec()
@@ -483,7 +530,7 @@ func TestLazyBackgroundCacheMissPersistsSchema(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, nil, host, reg, ctx, true) // cache miss + background kick
+	tools := LazyToolset(spec, nil, host, reg, ctx, true, nil) // cache miss + background kick
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -513,7 +560,7 @@ func TestLazyBackgroundCloseCancelsInFlightKick(t *testing.T) {
 	host := NewHost()
 	reg := tool.NewRegistry()
 
-	tools := LazyToolset(spec, cs, host, reg, context.Background(), true)
+	tools := LazyToolset(spec, cs, host, reg, context.Background(), true, nil)
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -560,7 +607,7 @@ func TestLazyConcurrentExecuteOnlyOneSpawn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	for _, lt := range tools {
 		reg.Add(lt)
 	}
@@ -653,7 +700,7 @@ func TestLazyHandshakeFailureSurfaced(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	if len(tools) != 1 {
 		t.Fatalf("LazyToolset returned %d tools, want 1 (doit)", len(tools))
 	}
@@ -709,7 +756,7 @@ func TestLazyToolsetCacheHitSchemaVisible(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	tools := LazyToolset(spec, cs, host, reg, ctx, false)
+	tools := LazyToolset(spec, cs, host, reg, ctx, false, nil)
 	if len(tools) != 1 {
 		t.Fatalf("LazyToolset returned %d tools, want 1", len(tools))
 	}

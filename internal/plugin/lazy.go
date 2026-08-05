@@ -58,6 +58,11 @@ type lazySpawn struct {
 	real     map[string]tool.Tool // namespaced name → real tool, populated on success
 	spawnErr error
 	swapped  bool
+	// filter, when non-nil, is applied to each real tool's namespaced name
+	// before it is installed into reg. Boot passes an allowlist/denylist
+	// predicate so a per-agent allowlist survives the placeholder→real swap
+	// instead of being flooded by the server's full toolset on first spawn.
+	filter func(name string) bool
 	// removePrefix is set for cache-miss placeholders so trySwap drops the
 	// single "<server>__connect" stub before re-registering the real tools
 	// under their actual namespaced names. Cache-hit placeholders use the
@@ -160,6 +165,9 @@ func (s *lazySpawn) trySwap() {
 		s.reg.RemovePrefix(s.removePrefix)
 	}
 	for _, t := range s.real {
+		if s.filter != nil && !s.filter(t.Name()) {
+			continue
+		}
 		s.reg.Add(t)
 	}
 	s.swapped = true
@@ -331,15 +339,18 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 // host is the Host that receives the real Client. reg is the registry where
 // real tools land after a successful spawn. sessionCtx must outlive any
 // single Execute (use the controller's PluginCtx) — a turn-scoped ctx would
-// kill the stdio child between turns.
-func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, sessionCtx context.Context, kick bool) []tool.Tool {
+// kill the stdio child between turns. filter, when non-nil, is applied to each
+// real tool's namespaced name before it is installed into reg (per-agent
+// allowlist/denylist enforcement across the placeholder→real swap).
+func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, sessionCtx context.Context, kick bool, filter func(name string) bool) []tool.Tool {
 	spawnCtx, cancel := context.WithCancel(sessionCtx)
 	host.registerDeferredCancel(cancel)
 	shared := &lazySpawn{
-		spec: spec,
-		host: host,
-		reg:  reg,
-		ctx:  spawnCtx,
+		spec:   spec,
+		host:   host,
+		reg:    reg,
+		ctx:    spawnCtx,
+		filter: filter,
 	}
 
 	var out []tool.Tool

@@ -24,6 +24,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
+	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
@@ -2358,5 +2359,191 @@ func TestHelperProcess(t *testing.T) {
 		resp := map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}
 		b, _ := json.Marshal(resp)
 		os.Stdout.Write(append(b, '\n'))
+	}
+}
+
+func TestMatchGlob(t *testing.T) {
+	cases := []struct {
+		pattern, name string
+		want          bool
+	}{
+		{"mcp__gitlab__*", "mcp__gitlab__get_issue", true},
+		{"mcp__gitlab__*", "mcp__gitlab__merge_merge_request", true},
+		{"mcp__gitlab__*", "mcp__git__git_status", false},
+		{"mcp__gitlab__get_issue", "mcp__gitlab__get_issue", true},
+		{"mcp__gitlab__get_issue", "mcp__gitlab__get_issues", false},
+		{"bash", "bash", true},
+		{"bash", "bash_output", false},
+		{"*", "anything_at_all", true},
+		{"read_file", "read_file", true},
+		{"read_file", "read_file_extra", false},
+		{"mcp__git__*", "mcp__git__git_add", true},
+		{"mcp__gitlab__list_merge_requests", "mcp__gitlab__list_merge_requests", true},
+		{"mcp__gitlab__list_merge_requests", "mcp__gitlab__list_merge_request", false},
+	}
+	for _, tc := range cases {
+		if got := permission.MatchGlob(tc.pattern, tc.name); got != tc.want {
+			t.Errorf("MatchGlob(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestToolMatchesAny(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns []string
+		want     bool
+	}{
+		{"mcp__gitlab__get_issue", []string{"mcp__gitlab__*", "bash"}, true},
+		{"bash", []string{"mcp__gitlab__*", "bash"}, true},
+		{"mcp__git__git_status", []string{"mcp__gitlab__*", "bash"}, false},
+		{"read", []string{"mcp__gitlab__*", "bash"}, false},
+		{"anything", []string{"*"}, true},
+		{"anything", []string{}, false},
+		{"mcp__gitlab__merge_merge_request", []string{"mcp__gitlab__get_issue", "mcp__gitlab__merge_merge_request"}, true},
+	}
+	for _, tc := range cases {
+		if got := toolMatchesAny(tc.name, tc.patterns); got != tc.want {
+			t.Errorf("toolMatchesAny(%q, %v) = %v, want %v", tc.name, tc.patterns, got, tc.want)
+		}
+	}
+}
+
+func TestBuildToolAllowlistStrict(t *testing.T) {
+	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{ToolAllowlist: []string{"bash", "read_file"}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	for _, name := range []string{"bash", "read_file"} {
+		if _, ok := ctrl.Registry().Get(name); !ok {
+			t.Fatalf("allowlisted tool %q missing from registry", name)
+		}
+	}
+	for _, name := range ctrl.Registry().Names() {
+		if name != "bash" && name != "read_file" {
+			t.Errorf("strict allowlist kept unlisted tool %q", name)
+		}
+	}
+}
+
+func TestBuildToolAllowlistEmptyKeepsAll(t *testing.T) {
+	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	if n := ctrl.Registry().Len(); n < 10 {
+		t.Fatalf("empty allowlist must keep the full tool surface, registry has %d tools", n)
+	}
+	if _, ok := ctrl.Registry().Get("bash"); !ok {
+		t.Fatal("empty allowlist dropped bash")
+	}
+}
+
+// TestToolAllowedGitAgentAllowlist is the regression test for the lazy-swap
+// allowlist bypass (git agent flooding in mcp__git__*, mcp__codegraph__*, and
+// the non-allowlisted gitlab tools after its MCP servers spawn). It pins the
+// exact predicate boot now threads into plugin.LazyToolset so a per-agent
+// allowlist survives MCP hydration.
+func TestToolAllowedGitAgentAllowlist(t *testing.T) {
+	allowlist := []string{
+		"mcp__gitlab__get_merge_request",
+		"mcp__gitlab__create_merge_request", "mcp__gitlab__update_merge_request",
+		"mcp__gitlab__merge_merge_request", "mcp__gitlab__approve_merge_request",
+		"mcp__gitlab__unapprove_merge_request", "mcp__gitlab__get_merge_request_approval_state",
+		"mcp__gitlab__get_merge_request_diffs", "mcp__gitlab__list_merge_request_changed_files",
+		"mcp__gitlab__get_merge_request_file_diff", "mcp__gitlab__list_merge_request_versions",
+		"mcp__gitlab__get_merge_request_notes", "mcp__gitlab__create_merge_request_note",
+		"mcp__gitlab__mr_discussions", "mcp__gitlab__create_merge_request_discussion_note",
+		"mcp__gitlab__resolve_merge_request_thread",
+		"mcp__gitlab__list_issues", "mcp__gitlab__my_issues", "mcp__gitlab__get_issue",
+		"mcp__gitlab__create_issue", "mcp__gitlab__update_issue", "mcp__gitlab__create_issue_note",
+		"mcp__gitlab__list_issue_links", "mcp__gitlab__list_todos",
+		"mcp__gitlab__list_branches", "mcp__gitlab__get_branch", "mcp__gitlab__create_branch",
+		"mcp__gitlab__delete_branch",
+		"mcp__gitlab__get_project", "mcp__gitlab__list_projects", "mcp__gitlab__list_project_members",
+		"mcp__gitlab__whoami",
+		"mcp__gitlab__list_commits", "mcp__gitlab__get_commit", "mcp__gitlab__get_commit_diff",
+		"mcp__gitlab__list_commit_statuses", "mcp__gitlab__create_commit_status",
+		"mcp__gitlab__search_code",
+		"bash",
+	}
+	// Orchestrator children also carry the orchestrator tool denylist.
+	denylist := []string{"orchestrator_add_agent", "orchestrator_list_agents", "orchestrator_remove_agent"}
+
+	allowed := []string{
+		"bash",
+		"mcp__gitlab__get_merge_request",
+		"mcp__gitlab__list_merge_request_changed_files",
+		"mcp__gitlab__search_code",
+	}
+	for _, name := range allowed {
+		if !toolAllowed(name, allowlist, denylist) {
+			t.Errorf("toolAllowed(%q) = false, want true (allowlisted)", name)
+		}
+	}
+
+	denied := []string{
+		// GitLab tools the allowlist omitted — must not resurrect on spawn.
+		"mcp__gitlab__list_pipelines",
+		"mcp__gitlab__get_pipeline",
+		"mcp__gitlab__get_project_milestones",
+		"mcp__gitlab__discover_tools",
+		// mcp__git__* is explicitly excluded in the git agent prompt.
+		"mcp__git__checkout",
+		"mcp__git__commit",
+		"mcp__git__branch_create",
+		"mcp__git__status",
+		// codegraph is visible to every agent, but not allowlisted for git.
+		"mcp__codegraph__query",
+		"mcp__codegraph__index",
+		// orchestrator internals are denied for child agents.
+		"orchestrator_add_agent",
+	}
+	for _, name := range denied {
+		if toolAllowed(name, allowlist, denylist) {
+			t.Errorf("toolAllowed(%q) = true, want false (not allowlisted or denied)", name)
+		}
 	}
 }
