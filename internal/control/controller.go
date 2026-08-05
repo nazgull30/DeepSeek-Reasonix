@@ -658,6 +658,11 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
 			c.snapshotActivityIfChanged(startMessages)
 			c.stripTurnMessagesAfter(startMessages)
+		} else if !c.hasAssistantAfter(startMessages) {
+			// The turn failed before the model produced any reply. Discard the
+			// incomplete turn so the orphaned user prompt neither stays in
+			// context nor gets persisted as an "empty" one-turn session.
+			c.stripTurnMessagesAfter(startMessages)
 		}
 		return err
 	}
@@ -697,6 +702,8 @@ func (c *Controller) runTurnWithRawDisplay(ctx context.Context, input, raw, disp
 	if err := c.runner.Run(ctx, c.ComposeSynthetic(planApprovedMessage)); err != nil {
 		if errors.Is(err, context.Canceled) && c.RuntimeStatus().CancelRequested {
 			c.snapshotActivityIfChanged(execStart)
+			c.stripTurnMessagesAfter(execStart)
+		} else if !c.hasAssistantAfter(execStart) {
 			c.stripTurnMessagesAfter(execStart)
 		}
 		return err
@@ -2248,6 +2255,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		ForkMessageIndex: boundary,
 		Preview:          forkPreview,
 		Turns:            forkTurns,
+		HasReply:         agent.MessagesHaveReply(forked),
 		SchemaVersion:    agent.BranchMetaCountsVersion,
 	}); err != nil {
 		return "", c.rewindFail(err)
@@ -2319,6 +2327,7 @@ func (c *Controller) Branch(name string) (string, error) {
 		ForkMessageIndex: len(branched),
 		Preview:          branchPreview,
 		Turns:            branchTurns,
+		HasReply:         agent.MessagesHaveReply(branched),
 		SchemaVersion:    agent.BranchMetaCountsVersion,
 	}); err != nil {
 		return "", c.rewindFail(err)
@@ -2591,6 +2600,12 @@ func (c *Controller) snapshot(markActivity bool) error {
 		// prompt) — staying quiet here is correct, not a data-loss path.
 		return nil
 	}
+	if !s.HasAssistant() {
+		// Only system/user messages means every turn failed or was interrupted
+		// before the model replied. Persisting that would litter the session
+		// dir (and /tree) with "empty" one-turn sessions, so stay quiet.
+		return nil
+	}
 	if path == "" {
 		// There IS content but nowhere to write it: this silently dropped whole
 		// bot conversations (#4414). Surface it loudly instead of returning nil
@@ -2617,7 +2632,7 @@ func (c *Controller) snapshot(markActivity bool) error {
 	// like SetBranchModelPreserveUpdated. The single write subsumes the old
 	// EnsureBranchMeta / SetBranchModel / TouchBranchMeta sequence.
 	preview, turns := agent.SessionPreviewFromMessages(s.Snapshot())
-	return agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity)
+	return agent.UpdateSessionMeta(path, modelRef, preview, turns, s.HasAssistant(), markActivity)
 }
 
 func (c *Controller) messageCount() int {
@@ -2642,6 +2657,22 @@ func (c *Controller) stripTurnMessagesAfter(idx int) {
 		return
 	}
 	c.executor.Session().Replace(msgs[:idx])
+}
+
+// hasAssistantAfter reports whether any message after idx is an assistant or
+// tool message, i.e. whether the turn produced real output before it ended.
+// Used to distinguish a failed-but-empty turn (strip it) from a failed turn
+// that made progress and should keep its partial transcript.
+func (c *Controller) hasAssistantAfter(idx int) bool {
+	if c.executor == nil {
+		return false
+	}
+	for _, m := range c.executor.Session().Snapshot()[idx:] {
+		if m.Role != provider.RoleSystem && m.Role != provider.RoleUser {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Controller) snapshotActivityIfChanged(startMessages int) {

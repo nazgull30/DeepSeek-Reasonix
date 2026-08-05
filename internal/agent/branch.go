@@ -45,14 +45,17 @@ type BranchMeta struct {
 	SchemaVersion    int               `json:"schema_version,omitempty"`
 	Turns            int               `json:"turns,omitempty"`
 	Preview          string            `json:"preview,omitempty"`
+	HasReply         bool              `json:"has_reply,omitempty"`
 	SessionUsage     *SessionUsageMeta `json:"session_usage,omitempty"`
 }
 
 // BranchMetaCountsVersion is stamped into BranchMeta.SchemaVersion whenever a
 // writer records Turns/Preview from session content (UpdateSessionMeta,
 // Fork/Branch). Bump it when the meaning of those listing fields changes so
-// existing listings re-derive them instead of trusting a stale cache.
-const BranchMetaCountsVersion = 1
+// existing listings re-derive them instead of trusting a stale cache. Version 2
+// adds HasReply, distinguishing "some turns" from "at least one completed turn
+// with a model reply" so empty sessions can be filtered without a decode.
+const BranchMetaCountsVersion = 2
 
 func (m BranchMeta) DefaultScope() string {
 	switch m.Scope {
@@ -214,6 +217,11 @@ func ListBranches(dir string) ([]BranchInfo, error) {
 		if !IsVisibleSession(path) {
 			continue
 		}
+		if !sessionHasReply(path) {
+			// Only system/user messages (e.g. an interrupted or failed turn) —
+			// an "empty" session that should not appear in /tree or pickers.
+			continue
+		}
 		preview, turns := previewSession(path)
 		if turns == 0 {
 			continue
@@ -297,7 +305,7 @@ func SetBranchModelPreserveUpdated(sessionPath, model string) error {
 // markActivity bumps UpdatedAt (the autosave path passes true on a real turn);
 // false preserves it (used to backfill legacy sessions during a read). An empty
 // model leaves the stored model untouched.
-func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivity bool) error {
+func UpdateSessionMeta(sessionPath, model, preview string, turns int, hasReply bool, markActivity bool) error {
 	if sessionPath == "" {
 		return fmt.Errorf("empty session path")
 	}
@@ -310,6 +318,7 @@ func UpdateSessionMeta(sessionPath, model, preview string, turns int, markActivi
 	}
 	m.Preview = preview
 	m.Turns = turns
+	m.HasReply = hasReply
 	// These counts were derived from the current content, so mark them
 	// authoritative — listing can then trust Turns (even 0) without re-decoding.
 	m.SchemaVersion = BranchMetaCountsVersion

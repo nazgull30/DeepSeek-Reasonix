@@ -14,6 +14,7 @@ func TestBranchMetaRoundTripAndList(t *testing.T) {
 
 	root := NewSession("sys")
 	root.Add(provider.Message{Role: provider.RoleUser, Content: "root prompt"})
+	root.Add(provider.Message{Role: provider.RoleAssistant, Content: "root reply"})
 	if err := root.Save(rootPath); err != nil {
 		t.Fatal(err)
 	}
@@ -23,6 +24,7 @@ func TestBranchMetaRoundTripAndList(t *testing.T) {
 
 	child := NewSession("sys")
 	child.Add(provider.Message{Role: provider.RoleUser, Content: "child prompt"})
+	child.Add(provider.Message{Role: provider.RoleAssistant, Content: "child reply"})
 	if err := child.Save(childPath); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +63,7 @@ func TestListBranchesSkipsCleanupPending(t *testing.T) {
 
 	visible := NewSession("sys")
 	visible.Add(provider.Message{Role: provider.RoleUser, Content: "visible prompt"})
+	visible.Add(provider.Message{Role: provider.RoleAssistant, Content: "visible reply"})
 	if err := visible.Save(visiblePath); err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +73,7 @@ func TestListBranchesSkipsCleanupPending(t *testing.T) {
 
 	pending := NewSession("sys")
 	pending.Add(provider.Message{Role: provider.RoleUser, Content: "pending prompt"})
+	pending.Add(provider.Message{Role: provider.RoleAssistant, Content: "pending reply"})
 	if err := pending.Save(pendingPath); err != nil {
 		t.Fatal(err)
 	}
@@ -89,6 +93,39 @@ func TestListBranchesSkipsCleanupPending(t *testing.T) {
 	}
 	if branches[0].Path != visiblePath {
 		t.Fatalf("listed branch path = %q, want %q", branches[0].Path, visiblePath)
+	}
+}
+
+func TestListBranchesSkipsSessionWithoutReply(t *testing.T) {
+	dir := t.TempDir()
+	emptyPath := filepath.Join(dir, "empty.jsonl")
+	realPath := filepath.Join(dir, "real.jsonl")
+
+	empty := NewSession("sys")
+	empty.Add(provider.Message{Role: provider.RoleUser, Content: "orphaned prompt"})
+	if err := empty.Save(emptyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := TouchBranchMeta(emptyPath); err != nil {
+		t.Fatal(err)
+	}
+
+	real := NewSession("sys")
+	real.Add(provider.Message{Role: provider.RoleUser, Content: "prompt"})
+	real.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
+	if err := real.Save(realPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := TouchBranchMeta(realPath); err != nil {
+		t.Fatal(err)
+	}
+
+	branches, err := ListBranches(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(branches) != 1 || branches[0].Path != realPath {
+		t.Fatalf("branches = %+v, want only the session with a reply", branches)
 	}
 }
 

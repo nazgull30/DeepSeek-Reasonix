@@ -226,6 +226,7 @@ func saveTestSession(t *testing.T, path, prompt string) {
 	t.Helper()
 	s := agent.NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: prompt})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "reply"})
 	if err := s.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +313,13 @@ func TestRunResumeSwitchesSession(t *testing.T) {
 		t.Fatalf("session path = %q, want %q", got, otherPath)
 	}
 	hist := ctrl.History()
-	if len(hist) == 0 || hist[len(hist)-1].Content != "other prompt" {
+	found := false
+	for _, m := range hist {
+		if m.Content == "other prompt" {
+			found = true
+		}
+	}
+	if !found {
 		t.Fatalf("history not loaded from target: %+v", hist)
 	}
 }

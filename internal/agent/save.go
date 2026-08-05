@@ -108,6 +108,7 @@ type SessionInfo struct {
 	ModTime        time.Time // compatibility alias for LastActivityAt
 	Preview        string
 	Turns          int
+	HasReply       bool
 	Scope          string
 	WorkspaceRoot  string
 	TopicID        string
@@ -131,6 +132,7 @@ type SessionOrderInfo struct {
 	// be trusted (even Turns == 0). ListSessions uses them to skip the whole-file decode.
 	Turns         int
 	Preview       string
+	HasReply      bool
 	SchemaVersion int
 }
 
@@ -301,6 +303,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 		topicTitle := ""
 		turns := 0
 		preview := ""
+		hasReply := false
 		schemaVersion := 0
 		if meta, ok, err := LoadBranchMeta(full); err == nil && ok {
 			if !meta.CreatedAt.IsZero() {
@@ -315,6 +318,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			topicTitle = meta.TopicTitle
 			turns = meta.Turns
 			preview = meta.Preview
+			hasReply = meta.HasReply
 			schemaVersion = meta.SchemaVersion
 		}
 		out = append(out, SessionOrderInfo{
@@ -328,6 +332,7 @@ func ListSessionOrder(dir string) ([]SessionOrderInfo, error) {
 			TopicTitle:     topicTitle,
 			Turns:          turns,
 			Preview:        preview,
+			HasReply:       hasReply,
 			SchemaVersion:  schemaVersion,
 		})
 	}
@@ -352,18 +357,21 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 	var out []SessionInfo
 	for _, session := range ordered {
 		preview, turns := session.Preview, session.Turns
+		hasReply := session.HasReply
 		if session.SchemaVersion < BranchMetaCountsVersion {
 			// The sidecar's counts weren't recorded from content (a legacy session
 			// from before they were persisted). Decode the .jsonl once, then backfill
 			// + stamp the sidecar so every later listing is O(1) — and so a genuinely
 			// empty session is recorded once instead of being re-decoded forever.
 			preview, turns = previewSession(session.Path)
+			hasReply = sessionHasReply(session.Path)
 			// Best-effort: a failure here just means we decode again next time.
-			_ = UpdateSessionMeta(session.Path, "", preview, turns, false)
+			_ = UpdateSessionMeta(session.Path, "", preview, turns, hasReply, false)
 		}
-		if turns == 0 {
-			// Never had user interaction — an empty conversation that should not
-			// appear in the history panel or the resume picker.
+		if turns == 0 || !hasReply {
+			// Never had user interaction, or every turn failed before the model
+			// replied — an empty conversation that should not appear in the
+			// history panel or the resume picker.
 			continue
 		}
 		out = append(out, SessionInfo{
@@ -373,6 +381,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			ModTime:        session.ModTime,
 			Preview:        preview,
 			Turns:          turns,
+			HasReply:       hasReply,
 			Scope:          session.Scope,
 			WorkspaceRoot:  session.WorkspaceRoot,
 			TopicID:        session.TopicID,
@@ -407,6 +416,18 @@ func SessionPreviewFromMessages(msgs []provider.Message) (string, int) {
 	return first, turns
 }
 
+// MessagesHaveReply reports whether the message slice contains any assistant or
+// tool message, i.e. at least one completed turn. The in-memory counterpart of
+// sessionHasReply, used when persisting listing counts from content.
+func MessagesHaveReply(msgs []provider.Message) bool {
+	for _, m := range msgs {
+		if m.Role != provider.RoleSystem && m.Role != provider.RoleUser {
+			return true
+		}
+	}
+	return false
+}
+
 // previewSession returns the first user message (truncated) and the number of
 // user-role messages so the picker can show "5 turns · 'help me debug the…'".
 // Errors are swallowed — a malformed file just shows up with an empty preview.
@@ -432,6 +453,28 @@ func previewSession(path string) (string, int) {
 		}
 	}
 	return first, turns
+}
+
+// sessionHasReply reports whether the session file contains any assistant or
+// tool message, i.e. at least one completed turn. A file holding only system
+// and user messages is an interrupted/failed turn that should be treated as
+// empty by listings. Errors are swallowed — a malformed file is not a reply.
+func sessionHasReply(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	dec := json.NewDecoder(f)
+	for {
+		var m provider.Message
+		if err := dec.Decode(&m); err != nil {
+			return false // EOF or a malformed tail — no reply found
+		}
+		if m.Role != provider.RoleSystem && m.Role != provider.RoleUser {
+			return true
+		}
+	}
 }
 
 // truncatePreview clamps a preview line to 80 runes with an ellipsis, matching
