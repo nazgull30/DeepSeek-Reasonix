@@ -73,7 +73,7 @@ func (m chatTUI) renderClearConfirm() string {
 	w := max(viewWidth(m.width), 40)
 	var b strings.Builder
 	b.WriteString(i18n.M.SlashClearPrompt + "\n")
-	b.WriteString(viewMeta("This deletes the current transcript from local history and keeps only the system prompt.") + "\n\n")
+	b.WriteString(viewMeta("This moves the current transcript to the local trash (recoverable with /restore) and starts a fresh session.") + "\n\n")
 	b.WriteString(rowLine(m.clearConfirm.confirm == 0, 1, "", "Clear", false) + "\n")
 	b.WriteString(rowLine(m.clearConfirm.confirm == 1, 2, "", "Cancel", false))
 	return choicePanelStyle.Width(w).Render(b.String())

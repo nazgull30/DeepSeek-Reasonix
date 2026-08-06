@@ -1111,7 +1111,7 @@ func removeDesktopSessionArtifacts(path string) error {
 	if err := jobs.RemoveArtifacts(path); err != nil {
 		return err
 	}
-	paths := []string{path, agent.BranchMetaPath(path)}
+	paths := []string{path, agent.BranchMetaPath(path), agent.GoalStateSidecar(path)}
 	if strings.HasSuffix(path, ".jsonl") {
 		paths = append(paths, strings.TrimSuffix(path, ".jsonl")+".ckpt")
 	}

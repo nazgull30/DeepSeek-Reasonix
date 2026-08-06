@@ -97,6 +97,11 @@ type Controller struct {
 	startedOnce            bool                             // guards the one-shot SessionStart hook on first turn
 	onRemember             func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
 
+	// SessionRemoval, when set, replaces the default hard-delete used when a
+	// session is cleared (ClearSession). Frontends install it to move artifacts
+	// into a local trash so clearing is recoverable.
+	SessionRemoval func(path string) error
+
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
 	// model/key switch — which rebuilds the controller — refreshes them.
@@ -462,10 +467,7 @@ func ckptDir(sessionPath string) string {
 
 // goalStatePath derives a session's persisted goal-state sidecar.
 func goalStatePath(sessionPath string) string {
-	if sessionPath == "" {
-		return ""
-	}
-	return strings.TrimSuffix(sessionPath, ".jsonl") + ".goal-state.json"
+	return agent.GoalStateSidecar(sessionPath)
 }
 
 // rebindCheckpoints points the store at the (possibly new) session, loading any
@@ -2033,7 +2035,7 @@ func (c *Controller) ClearSession() error {
 	}
 	destroy := c.BeginDestroySession(oldPath)
 	if !destroy.Async {
-		if err := removeSessionArtifacts(oldPath); err != nil {
+		if err := c.removeArtifacts(oldPath); err != nil {
 			destroy.Finish()
 			return err
 		}
@@ -2062,13 +2064,22 @@ func (c *Controller) ClearSession() error {
 				}
 				destroy.WaitAll()
 			}
-			if err := removeSessionArtifacts(oldPath); err != nil {
+			if err := c.removeArtifacts(oldPath); err != nil {
 				c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "clear session cleanup failed: " + err.Error()})
 			}
 			destroy.Finish()
 		}()
 	}
 	return nil
+}
+
+// removeArtifacts performs the physical cleanup for a cleared session, honoring
+// a frontend-installed SessionRemoval hook (e.g. move-to-trash) when present.
+func (c *Controller) removeArtifacts(path string) error {
+	if c.SessionRemoval != nil {
+		return c.SessionRemoval(path)
+	}
+	return removeSessionArtifacts(path)
 }
 
 func (c *Controller) hasUnfinishedSessionJobs(sessionPath string) bool {
@@ -2085,7 +2096,7 @@ func removeSessionArtifacts(path string) error {
 	if err := jobs.RemoveArtifacts(path); err != nil {
 		return err
 	}
-	for _, p := range []string{path, agent.BranchMetaPath(path)} {
+	for _, p := range []string{path, agent.BranchMetaPath(path), agent.GoalStateSidecar(path)} {
 		if p == "" {
 			continue
 		}

@@ -1018,6 +1018,9 @@ func removeSessionFiles(absDir, abs string) error {
 	if err := os.Remove(abs); err != nil && !os.IsNotExist(err) {
 		return err
 	}
+	if err := os.Remove(agent.GoalStateSidecar(abs)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := agent.DeleteSubagentsByParent(absDir, agent.BranchID(abs)); err != nil {
 		return err
 	}

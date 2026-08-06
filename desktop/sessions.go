@@ -7,13 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/fileutil"
-	"reasonix/internal/jobs"
 )
 
 // sessions.go holds the desktop-only session-management state that the shared
@@ -104,66 +102,24 @@ func setSessionTitle(dir, sessionPath, title string) error {
 // trash. Title/display sidecars stay in place so trash previews and restores can
 // preserve the user's labels.
 func deleteSessionFile(dir, sessionPath string) error {
-	sessionPath, key, err := validateSessionPath(dir, sessionPath)
-	if err != nil {
-		return err
-	}
-	return trashSessionArtifacts(dir, sessionPath, key)
-}
-
-type trashedSessionMeta struct {
-	Key       string `json:"key"`
-	DeletedAt int64  `json:"deletedAt"`
+	return agent.TrashSessionFiles(dir, sessionPath)
 }
 
 func trashSessionArtifacts(dir, sessionPath, key string) error {
-	return trashSessionArtifactsBeforeMove(dir, sessionPath, key, nil)
+	return agent.TrashSessionFiles(dir, sessionPath)
 }
 
 func reconcileDesktopCleanupPending(dir string) error {
 	return agent.ReconcileCleanupPending(dir, func(item agent.CleanupPendingInfo) error {
 		if strings.TrimSpace(item.Meta.Operation) == "delete" {
-			sessionPath, key, err := validateSessionPath(dir, item.SessionPath)
-			if err != nil {
-				return err
-			}
-			return reconcileDesktopTrashSessionArtifacts(dir, sessionPath, key)
+			return agent.MoveSessionFilesToTrash(dir, item.SessionPath)
 		}
 		return removeDesktopSessionArtifacts(item.SessionPath)
 	})
 }
 
 func reconcileDesktopTrashSessionArtifacts(dir, sessionPath, key string) error {
-	itemDir := filepath.Join(sessionTrashPath(dir), key)
-	if err := os.MkdirAll(itemDir, 0o755); err != nil {
-		return err
-	}
-	if err := movePathIfExists(sessionPath, filepath.Join(itemDir, key)); err != nil {
-		return err
-	}
-	if err := movePathIfExists(sessionPath+".meta", filepath.Join(itemDir, key+".meta")); err != nil {
-		return err
-	}
-	ckptName := strings.TrimSuffix(key, ".jsonl") + ".ckpt"
-	if err := movePathIfExists(strings.TrimSuffix(sessionPath, ".jsonl")+".ckpt", filepath.Join(itemDir, ckptName)); err != nil {
-		return err
-	}
-	jobsName := strings.TrimSuffix(key, ".jsonl") + ".jobs"
-	if err := movePathIfExists(jobs.ArtifactDir(sessionPath), filepath.Join(itemDir, jobsName)); err != nil {
-		return err
-	}
-	if err := trashSubagentArtifacts(dir, sessionPath, itemDir); err != nil {
-		return err
-	}
-	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
-	b, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(itemDir, sessionTrashMetaFile), b, 0o644); err != nil {
-		return err
-	}
-	return agent.ClearCleanupPending(sessionPath)
+	return agent.MoveSessionFilesToTrash(dir, sessionPath)
 }
 
 func validateSessionTrashTarget(dir, sessionPath, key string) error {
@@ -181,139 +137,25 @@ func validateSessionTrashTarget(dir, sessionPath, key string) error {
 	return nil
 }
 
-func trashSessionArtifactsBeforeMove(dir, sessionPath, key string, beforeMove func()) error {
-	if err := validateSessionTrashTarget(dir, sessionPath, key); err != nil {
-		return err
-	}
-	if _, err := os.Stat(sessionPath); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	itemDir := filepath.Join(sessionTrashPath(dir), key)
-	if err := os.MkdirAll(itemDir, 0o755); err != nil {
-		return err
-	}
-	if beforeMove != nil {
-		beforeMove()
-	}
-	if err := movePathIfExists(sessionPath, filepath.Join(itemDir, key)); err != nil {
-		return err
-	}
-	if err := movePathIfExists(sessionPath+".meta", filepath.Join(itemDir, key+".meta")); err != nil {
-		return err
-	}
-	ckptName := strings.TrimSuffix(key, ".jsonl") + ".ckpt"
-	if err := movePathIfExists(strings.TrimSuffix(sessionPath, ".jsonl")+".ckpt", filepath.Join(itemDir, ckptName)); err != nil {
-		return err
-	}
-	jobsName := strings.TrimSuffix(key, ".jsonl") + ".jobs"
-	if err := movePathIfExists(jobs.ArtifactDir(sessionPath), filepath.Join(itemDir, jobsName)); err != nil {
-		return err
-	}
-	if err := trashSubagentArtifacts(dir, sessionPath, itemDir); err != nil {
-		return err
-	}
-	meta := trashedSessionMeta{Key: key, DeletedAt: time.Now().UnixMilli()}
-	b, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(itemDir, sessionTrashMetaFile), b, 0o644); err != nil {
-		return err
-	}
-	if err := agent.ClearCleanupPending(sessionPath); err != nil {
-		return err
-	}
-	return nil
-}
-
 func listTrashedSessionFiles(dir string) ([]string, error) {
-	root := sessionTrashPath(dir)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
-	}
-	paths := []string{}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		key := e.Name()
-		if filepath.Ext(key) != ".jsonl" || filepath.Base(key) != key {
-			continue
-		}
-		path := filepath.Join(root, key, key)
-		validPath, _, _, err := validateTrashedSessionPath(dir, path)
-		if err != nil {
-			continue
-		}
-		if info, err := os.Stat(validPath); err == nil && !info.IsDir() {
-			paths = append(paths, validPath)
-		}
-	}
-	return paths, nil
+	return agent.ListTrashedSessions(dir)
 }
 
 func trashedSessionDeletedAt(path string) int64 {
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(path), sessionTrashMetaFile))
-	if err != nil {
-		return 0
-	}
-	var meta trashedSessionMeta
-	if err := json.Unmarshal(b, &meta); err != nil {
-		return 0
-	}
-	return meta.DeletedAt
+	return agent.TrashedSessionDeletedAt(path)
 }
 
 func restoreTrashedSessionFile(dir, path string) error {
-	trashPath, key, itemDir, err := validateTrashedSessionPath(dir, path)
-	if err != nil {
-		return err
-	}
-	target := filepath.Join(dir, key)
-	if _, err := os.Stat(target); err == nil {
-		return fmt.Errorf("session already exists: %s", key)
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if err := checkRestoreSubagentConflicts(dir, itemDir); err != nil {
-		return err
-	}
-	if err := movePathIfExists(trashPath, target); err != nil {
-		return err
-	}
-	if err := movePathIfExists(trashPath+".meta", target+".meta"); err != nil {
-		return err
-	}
-	ckptName := strings.TrimSuffix(key, ".jsonl") + ".ckpt"
-	if err := movePathIfExists(filepath.Join(itemDir, ckptName), filepath.Join(dir, ckptName)); err != nil {
-		return err
-	}
-	jobsName := strings.TrimSuffix(key, ".jsonl") + ".jobs"
-	if err := movePathIfExists(filepath.Join(itemDir, jobsName), filepath.Join(dir, jobsName)); err != nil {
-		return err
-	}
-	if err := restoreSubagentArtifacts(dir, itemDir); err != nil {
-		return err
-	}
-	return os.RemoveAll(itemDir)
+	return agent.RestoreTrashedSession(dir, path)
 }
 
 func purgeTrashedSessionFile(dir, path string) error {
-	_, key, itemDir, err := validateTrashedSessionPath(dir, path)
-	if err != nil {
+	if err := agent.PurgeTrashedSession(dir, path); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(itemDir); err != nil {
-		return err
+	_, key, _, err := agent.ValidateTrashedSessionPath(dir, path)
+	if err != nil {
+		return nil
 	}
 	m := loadSessionTitles(dir)
 	if _, ok := m[key]; ok {
@@ -331,170 +173,12 @@ func purgeTrashedSessionFile(dir, path string) error {
 	return nil
 }
 
-func movePathIfExists(src, dst string) error {
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	return os.Rename(src, dst)
-}
-
-func trashSubagentArtifacts(dir, sessionPath, itemDir string) error {
-	artifacts, err := agent.ListSubagentsByParent(dir, agent.BranchID(sessionPath))
-	if err != nil {
-		return err
-	}
-	trashSubagentDir := filepath.Join(itemDir, "subagents")
-	for _, artifact := range artifacts {
-		if err := movePathIfExists(artifact.SessionPath, filepath.Join(trashSubagentDir, filepath.Base(artifact.SessionPath))); err != nil {
-			return err
-		}
-		if err := movePathIfExists(artifact.MetaPath, filepath.Join(trashSubagentDir, filepath.Base(artifact.MetaPath))); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func checkRestoreSubagentConflicts(dir, itemDir string) error {
-	trashSubagentDir := filepath.Join(itemDir, "subagents")
-	entries, err := os.ReadDir(trashSubagentDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		target := filepath.Join(dir, "subagents", entry.Name())
-		if _, err := os.Stat(target); err == nil {
-			return fmt.Errorf("subagent artifact already exists: %s", entry.Name())
-		} else if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	return nil
-}
-
-func restoreSubagentArtifacts(dir, itemDir string) error {
-	trashSubagentDir := filepath.Join(itemDir, "subagents")
-	entries, err := os.ReadDir(trashSubagentDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		if err := movePathIfExists(filepath.Join(trashSubagentDir, entry.Name()), filepath.Join(dir, "subagents", entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func validateSessionPath(dir, sessionPath string) (string, string, error) {
-	if strings.TrimSpace(sessionPath) == "" {
-		return "", "", fmt.Errorf("empty session path")
-	}
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", "", err
-	}
-	path := sessionPath
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(absDir, path)
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", "", err
-	}
-	if filepath.Ext(absPath) != ".jsonl" {
-		return "", "", fmt.Errorf("not a session file: %s", sessionPath)
-	}
-	rel, err := filepath.Rel(absDir, absPath)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		return "", "", fmt.Errorf("session path outside session dir: %s", sessionPath)
-	}
-	if info, err := os.Lstat(absPath); err == nil {
-		if info.IsDir() {
-			return "", "", fmt.Errorf("not a session file: %s", sessionPath)
-		}
-		realDir, dirErr := filepath.EvalSymlinks(absDir)
-		if dirErr != nil {
-			realDir = absDir
-		}
-		realPath, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
-			return "", "", err
-		}
-		rel, err := filepath.Rel(realDir, realPath)
-		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-			return "", "", fmt.Errorf("session path escapes session dir: %s", sessionPath)
-		}
-	} else if !os.IsNotExist(err) {
-		return "", "", err
-	}
-	return absPath, filepath.Base(absPath), nil
+	return agent.ValidateSessionPath(dir, sessionPath)
 }
 
 func validateTrashedSessionPath(dir, sessionPath string) (string, string, string, error) {
-	if strings.TrimSpace(sessionPath) == "" {
-		return "", "", "", fmt.Errorf("empty session path")
-	}
-	root, err := filepath.Abs(sessionTrashPath(dir))
-	if err != nil {
-		return "", "", "", err
-	}
-	path := sessionPath
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(root, path)
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return "", "", "", err
-	}
-	if filepath.Ext(absPath) != ".jsonl" {
-		return "", "", "", fmt.Errorf("not a session file: %s", sessionPath)
-	}
-	rel, err := filepath.Rel(root, absPath)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-		return "", "", "", fmt.Errorf("session path outside trash dir: %s", sessionPath)
-	}
-	parts := strings.Split(rel, string(filepath.Separator))
-	if len(parts) != 2 || parts[0] != parts[1] {
-		return "", "", "", fmt.Errorf("invalid trash session path: %s", sessionPath)
-	}
-	if info, err := os.Lstat(absPath); err == nil {
-		if info.IsDir() {
-			return "", "", "", fmt.Errorf("not a session file: %s", sessionPath)
-		}
-		realRoot, dirErr := filepath.EvalSymlinks(root)
-		if dirErr != nil {
-			realRoot = root
-		}
-		realPath, err := filepath.EvalSymlinks(absPath)
-		if err != nil {
-			return "", "", "", err
-		}
-		rel, err := filepath.Rel(realRoot, realPath)
-		if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || filepath.IsAbs(rel) {
-			return "", "", "", fmt.Errorf("session path escapes trash dir: %s", sessionPath)
-		}
-	} else if !os.IsNotExist(err) {
-		return "", "", "", err
-	}
-	return absPath, filepath.Base(absPath), filepath.Dir(absPath), nil
+	return agent.ValidateTrashedSessionPath(dir, sessionPath)
 }
 
 type sessionDisplayMap map[string]map[string]string
