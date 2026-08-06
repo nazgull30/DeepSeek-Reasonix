@@ -94,6 +94,9 @@ func FormatBranchTree(branches []agent.BranchInfo, currentID string) string {
 func branchTitle(b agent.BranchInfo, depth int) string {
 	title := strings.TrimSpace(b.Name)
 	if title == "" {
+		title = strings.TrimSpace(b.TopicTitle)
+	}
+	if title == "" {
 		title = strings.TrimSpace(b.Preview)
 	}
 	if label, ok := structuredBranchLabel(title); ok {

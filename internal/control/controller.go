@@ -2418,14 +2418,19 @@ func resolveBranch(branches []agent.BranchInfo, ref string) (agent.BranchInfo, e
 	var matches []agent.BranchInfo
 	for _, b := range branches {
 		nameLower := strings.ToLower(strings.TrimSpace(b.Name))
+		titleLower := strings.ToLower(strings.TrimSpace(b.TopicTitle))
 		switch {
 		case b.ID == ref || strings.EqualFold(b.ID, ref):
 			return b, nil
 		case b.Name != "" && nameLower == refLower:
 			matches = append(matches, b)
+		case b.TopicTitle != "" && titleLower == refLower:
+			matches = append(matches, b)
 		case strings.HasPrefix(strings.ToLower(b.ID), refLower):
 			matches = append(matches, b)
 		case strings.HasPrefix(strings.ToLower(shortBranchID(b.ID)), refLower):
+			matches = append(matches, b)
+		case strings.HasPrefix(titleLower, refLower):
 			matches = append(matches, b)
 		case b.Path == ref:
 			return b, nil
@@ -2443,6 +2448,9 @@ func resolveBranch(branches []agent.BranchInfo, ref string) (agent.BranchInfo, e
 func branchDisplayName(b agent.BranchInfo) string {
 	if strings.TrimSpace(b.Name) != "" {
 		return fmt.Sprintf("%s (%s)", b.Name, b.ID)
+	}
+	if strings.TrimSpace(b.TopicTitle) != "" {
+		return fmt.Sprintf("%s (%s)", b.TopicTitle, b.ID)
 	}
 	return b.ID
 }
