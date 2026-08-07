@@ -94,6 +94,17 @@ func BranchMetaPath(sessionPath string) string {
 	return sessionPath + ".meta"
 }
 
+// GoalStateSidecar returns the goal-state sidecar path for a session transcript
+// (…/<id>.jsonl → …/<id>.goal-state.json). Deletion/trash flows must remove or
+// move it alongside the transcript so clearing a session does not leave a
+// goal-state-only ghost behind.
+func GoalStateSidecar(sessionPath string) string {
+	if sessionPath == "" {
+		return ""
+	}
+	return strings.TrimSuffix(sessionPath, ".jsonl") + ".goal-state.json"
+}
+
 func LoadBranchMeta(sessionPath string) (BranchMeta, bool, error) {
 	metaPath := BranchMetaPath(sessionPath)
 	if metaPath == "" {

@@ -353,3 +353,43 @@ func TestResolveBranchAcceptsDisplayedShortID(t *testing.T) {
 		t.Fatalf("branch = %q, want %q", got.ID, branches[0].ID)
 	}
 }
+
+func TestResolveBranchMatchesTopicTitle(t *testing.T) {
+	branches := []agent.BranchInfo{
+		{BranchMeta: agent.BranchMeta{ID: "one", TopicTitle: "VC-37"}},
+		{BranchMeta: agent.BranchMeta{ID: "two", TopicTitle: "VC-26"}},
+	}
+	got, err := resolveBranch(branches, "VC-37")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "one" {
+		t.Fatalf("branch = %q, want one", got.ID)
+	}
+	if _, err := resolveBranch(branches, "vc-26"); err != nil {
+		t.Fatalf("case-insensitive topic title should resolve: %v", err)
+	}
+	if _, err := resolveBranch(branches, "VC-37"); err != nil {
+		t.Fatalf("topic-title prefix should resolve: %v", err)
+	}
+	if _, err := resolveBranch(branches, "VC-1"); err == nil {
+		t.Fatal("ambiguous topic-title prefix should error")
+	}
+}
+
+func TestFormatBranchTreePrefersTopicTitleOverPreview(t *testing.T) {
+	branches := []agent.BranchInfo{
+		{BranchMeta: agent.BranchMeta{ID: "renamed", TopicTitle: "VC-37"}, Preview: "# Skill: feature", Turns: 9},
+		{BranchMeta: agent.BranchMeta{ID: "branched", Name: "child branch", TopicTitle: "VC-38"}, Preview: "raw preview", Turns: 2},
+	}
+	got := FormatBranchTree(branches, "renamed")
+	if !strings.Contains(got, "VC-37") {
+		t.Fatalf("tree should show the topic title:\n%s", got)
+	}
+	if strings.Contains(got, "# Skill: feature") {
+		t.Fatalf("tree should not fall back to the raw preview:\n%s", got)
+	}
+	if !strings.Contains(got, "child branch") {
+		t.Fatalf("branch name should keep priority over the topic title:\n%s", got)
+	}
+}

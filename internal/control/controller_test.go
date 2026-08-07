@@ -208,6 +208,58 @@ func TestClearSessionMarksCleanupPendingBeforeReturningForRunningJobs(t *testing
 	}
 }
 
+func TestClearSessionHonorsSessionRemovalHook(t *testing.T) {
+	dir := t.TempDir()
+	oldPath := filepath.Join(dir, "old.jsonl")
+	if err := os.WriteFile(oldPath, []byte(`{"role":"user","content":"old"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)
+	ctrl := New(Options{Executor: exec, SessionDir: dir, SessionPath: oldPath, Label: "test"})
+
+	var removed string
+	ctrl.SessionRemoval = func(path string) error {
+		removed = path
+		return nil
+	}
+	if err := ctrl.ClearSession(); err != nil {
+		t.Fatalf("ClearSession: %v", err)
+	}
+	if removed != oldPath {
+		t.Fatalf("SessionRemoval hook got %q, want %q", removed, oldPath)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatalf("old session file should be left for the hook: %v", err)
+	}
+}
+
+func TestRemoveSessionArtifactsDeletesGoalState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"hi"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goal := agent.GoalStateSidecar(path)
+	if err := os.WriteFile(goal, []byte(`{"todos":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.SaveBranchMeta(path, agent.BranchMeta{Name: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(ckptDir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := removeSessionArtifacts(path); err != nil {
+		t.Fatalf("removeSessionArtifacts: %v", err)
+	}
+	for _, p := range []string{path, goal, agent.BranchMetaPath(path), ckptDir(path)} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed (stat err=%v)", p, err)
+		}
+	}
+}
+
 func TestReconcileCleanupPendingRemovesOrphanedArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "orphan.jsonl")

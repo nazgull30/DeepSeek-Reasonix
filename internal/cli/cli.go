@@ -195,13 +195,20 @@ func configureCLIThemeFromConfigNoProbe() {
 // stdout, the TUI passes an event-channel sink so events become tea.Msgs.
 func setup(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink) (*control.Controller, error) {
 	migrateMCPConfigForCLIWorkspace()
-	return boot.Build(ctx, boot.Options{
-		Model:      modelName,
-		MaxSteps:   maxStepsOverride,
-		RequireKey: requireKey,
-		Sink:       sink,
-		SessionDir: resolveCLISessionDir(),
+	ctrl, err := boot.Build(ctx, boot.Options{
+		Model:                    modelName,
+		MaxSteps:                 maxStepsOverride,
+		RequireKey:               requireKey,
+		Sink:                     sink,
+		SessionDir:               resolveCLISessionDir(),
+		CleanupPendingReconciler: cliReconcileCleanupPending,
 	})
+	if err != nil {
+		return nil, err
+	}
+	// /clear moves the session into the local trash so it can be restored.
+	ctrl.SessionRemoval = cliSessionRemoval
+	return ctrl, nil
 }
 
 // resolveCLISessionDir returns the session dir for CLI invocations. When the
@@ -222,13 +229,18 @@ func resolveCLISessionDir() string {
 // Used during model switch inside a bubbletea session to prevent plugin logs
 // from corrupting the TUI's terminal raw mode.
 func setupQuiet(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink) (*control.Controller, error) {
-	return boot.Build(ctx, boot.Options{
+	ctrl, err := boot.Build(ctx, boot.Options{
 		Model:      modelName,
 		MaxSteps:   maxStepsOverride,
 		RequireKey: requireKey,
 		Sink:       sink,
 		Stderr:     io.Discard,
 	})
+	if err != nil {
+		return nil, err
+	}
+	ctrl.SessionRemoval = cliSessionRemoval
+	return ctrl, nil
 }
 
 // wireOrchestrator builds the managed child agents configured under

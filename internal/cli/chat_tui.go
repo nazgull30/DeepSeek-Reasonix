@@ -3671,6 +3671,14 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 	case "/clear":
 		m.echoLocalCommand(input)
 		m.clearConfirm = &clearConfirm{confirm: 1}
+	case "/trash":
+		m.runTrashCommand(input)
+	case "/restore":
+		m.runRestoreCommand(input)
+	case "/purge":
+		m.runPurgeCommand(input)
+	case "/trash-empty":
+		m.runTrashEmptyCommand(input)
 	case "/resume":
 		m.runResumeCommand(input)
 	case "/rename":
@@ -3820,14 +3828,16 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			break
 		}
 		if oldPath != "" {
-			os.Remove(oldPath)
-			os.Remove(oldPath + ".meta")
+			if err := agent.TrashSessionFiles(filepath.Dir(oldPath), oldPath); err != nil {
+				m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
+				break
+			}
 		}
 		dir := m.orc.SessionDir()
 		if dir != "" {
 			a.Ctrl.SetSessionPath(filepath.Join(dir, "orchestrator_"+name+".jsonl"))
 		}
-		m.notice(fmt.Sprintf("%s cleared", name))
+		m.notice(fmt.Sprintf("%s cleared (previous session moved to trash)", name))
 	case "/agent_spawn":
 		m.echoLocalCommand(input)
 		if m.orc == nil {

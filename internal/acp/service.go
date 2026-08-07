@@ -1497,6 +1497,7 @@ func deleteSessionFiles(sessionPath string) error {
 		sessionPath,
 		sessionPath + ".meta",
 		acpMetaPath(sessionPath),
+		agent.GoalStateSidecar(sessionPath),
 	}
 	for _, path := range paths {
 		if path == "" {

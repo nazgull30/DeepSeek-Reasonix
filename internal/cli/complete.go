@@ -289,6 +289,9 @@ func (m *chatTUI) branchArgItems(val string) ([]compItem, int, bool) {
 		}
 		hint := b.Name
 		if hint == "" {
+			hint = b.TopicTitle
+		}
+		if hint == "" {
 			hint = b.Preview
 		}
 		if hint != "" {
