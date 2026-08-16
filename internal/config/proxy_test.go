@@ -6,7 +6,7 @@ func TestDirectProxyHostsFromNoProxyProviders(t *testing.T) {
 	spec := Default().NetworkProxySpec()
 	hasMimo := false
 	for _, h := range spec.DirectHosts {
-		if h == "token-plan-cn.xiaomimimo.com" {
+		if h == "api.xiaomimimo.com" {
 			hasMimo = true
 		}
 		if h == "api.deepseek.com" {
@@ -26,7 +26,7 @@ func TestExplicitProxyOverridesProviderNoProxy(t *testing.T) {
 	c.Network.ProxyMode = "custom"
 	spec := c.NetworkProxySpec()
 	for _, h := range spec.DirectHosts {
-		if h == "token-plan-cn.xiaomimimo.com" {
+		if h == "api.xiaomimimo.com" {
 			t.Fatalf("custom proxy must not force mimo direct; DirectHosts = %v", spec.DirectHosts)
 		}
 	}

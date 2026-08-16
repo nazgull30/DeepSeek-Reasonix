@@ -118,7 +118,7 @@ func TestNormalizeDesktopOfficialProviderAccessCanonicalizesLegacyIDs(t *testing
 	c.DefaultModel = "deepseek-flash/deepseek-v4-pro"
 	c.Desktop.ProviderAccess = []string{"deepseek-flash", "mimo-pro"}
 	normalizeDesktopOfficialProviderAccess(c)
-	if len(c.Desktop.ProviderAccess) != 2 || c.Desktop.ProviderAccess[0] != "deepseek" || c.Desktop.ProviderAccess[1] != "mimo-token-plan" {
+	if len(c.Desktop.ProviderAccess) != 2 || c.Desktop.ProviderAccess[0] != "deepseek" || c.Desktop.ProviderAccess[1] != "mimo-api" {
 		t.Fatalf("provider_access = %+v, want canonical official ids", c.Desktop.ProviderAccess)
 	}
 	if c.DefaultModel != "deepseek/deepseek-v4-pro" {
@@ -127,11 +127,11 @@ func TestNormalizeDesktopOfficialProviderAccessCanonicalizesLegacyIDs(t *testing
 	if _, ok := c.Provider("deepseek"); !ok {
 		t.Fatal("canonical deepseek provider missing")
 	}
-	if _, ok := c.Provider("mimo-token-plan"); !ok {
-		t.Fatal("canonical mimo-token-plan provider missing")
+	if _, ok := c.Provider("mimo-api"); !ok {
+		t.Fatal("canonical mimo-api provider missing")
 	}
-	if p, _ := c.Provider("mimo-token-plan"); p.Price != nil {
-		t.Fatalf("mimo-token-plan mixed-model price = %+v, want nil", p.Price)
+	if p, _ := c.Provider("mimo-api"); p.Price != nil {
+		t.Fatalf("mimo-api mixed-model price = %+v, want nil", p.Price)
 	}
 }
 
