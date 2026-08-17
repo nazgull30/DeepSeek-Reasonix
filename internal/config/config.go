@@ -1320,8 +1320,8 @@ func Default() *Config {
 		Providers: []ProviderEntry{
 			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
 			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPrice()},
-			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPrice(), NoProxy: true},
-			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://token-plan-cn.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25Price(), NoProxy: true},
+			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPriceUSD(), NoProxy: true},
+			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25PriceUSD(), NoProxy: true},
 		},
 	}
 }
@@ -1452,6 +1452,124 @@ func mimoDomesticPrices(models []string) map[string]*provider.Pricing {
 		}
 	}
 	return prices
+}
+
+// mimoV25ProPriceUSD returns the official MiMo pay-as-you-go price in USD.
+// https://mimo.mi.com/docs/price/pay-as-you-go
+func mimoV25ProPriceUSD() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.0036, Input: 0.435, Output: 0.87, Currency: "$"}
+}
+
+func mimoV25PriceUSD() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
+}
+
+// mimoV2FlashPriceUSD is the converted USD price for the deprecated
+// mimo-v2-flash model (no official USD listing; converted at the same rate as
+// the V2.5 series).
+func mimoV2FlashPriceUSD() *provider.Pricing {
+	return &provider.Pricing{CacheHit: 0.01, Input: 0.10, Output: 0.30, Currency: "$"}
+}
+
+// mimoPricesUSD returns the official pay-as-you-go USD price table.
+func mimoPricesUSD() map[string]*provider.Pricing {
+	return map[string]*provider.Pricing{
+		"mimo-v2.5-pro": mimoV25ProPriceUSD(),
+		"mimo-v2.5":     mimoV25PriceUSD(),
+		"mimo-v2-flash": mimoV2FlashPriceUSD(),
+	}
+}
+
+// mimoPricesCNY returns the official pay-as-you-go CNY price table.
+func mimoPricesCNY() map[string]*provider.Pricing {
+	return map[string]*provider.Pricing{
+		"mimo-v2.5-pro": mimoV25ProPrice(),
+		"mimo-v2.5":     mimoV25Price(),
+		"mimo-v2-flash": mimoV2FlashPrice(),
+	}
+}
+
+// MiMoPricesForLanguage returns the official MiMo price table for a locale.
+// "zh" / "cny" / "rmb" / "yuan" return ¥ (RMB); anything else returns $ (USD).
+func MiMoPricesForLanguage(lang string) map[string]*provider.Pricing {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh", "cny", "rmb", "yuan":
+		return mimoPricesCNY()
+	default:
+		return mimoPricesUSD()
+	}
+}
+
+func mimoPricesForConfig(c *Config) map[string]*provider.Pricing {
+	if c != nil && c.MiMoOfficialPricingLanguage() != "" {
+		return MiMoPricesForLanguage(c.MiMoOfficialPricingLanguage())
+	}
+	return mimoPricesUSD()
+}
+
+func mimoPriceForModel(lang, model string) *provider.Pricing {
+	model = strings.TrimSpace(model)
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "zh", "cny", "rmb", "yuan":
+		return clonePricing(mimoPricesCNY()[model])
+	default:
+		return clonePricing(mimoPricesUSD()[model])
+	}
+}
+
+// MiMoOfficialPricingLanguage returns the locale hint used to pick default MiMo
+// pricing (USD vs RMB). Returns the configured language or empty string (which
+// maps to USD). Set to "zh" in config to see ¥ prices in /stats and the TUI
+// without manually overriding prices.
+func (c *Config) MiMoOfficialPricingLanguage() string {
+	if c == nil || c.Language == "" {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Language)) {
+	case "zh", "cny", "rmb", "yuan":
+		return "zh"
+	}
+	return ""
+}
+
+// ApplyMiMoOfficialDefaultPricing refreshes built-in/official MiMo prices that
+// still match known official defaults. Custom user prices are left untouched.
+func (c *Config) ApplyMiMoOfficialDefaultPricing() {
+	applyMiMoOfficialDefaultPricing(c)
+}
+
+func applyMiMoOfficialDefaultPricing(c *Config) {
+	if c == nil {
+		return
+	}
+	lang := c.MiMoOfficialPricingLanguage()
+	for i := range c.Providers {
+		p := &c.Providers[i]
+		if !isOfficialMimoAPIProvider(p) && !isOfficialMimoTokenPlanProvider(p) {
+			continue
+		}
+		if isKnownMimoOfficialPricing(p.Model, p.Price) {
+			p.Price = mimoPriceForModel(lang, p.Model)
+		}
+		for model, price := range p.Prices {
+			if isKnownMimoOfficialPricing(model, price) {
+				p.Prices[model] = mimoPriceForModel(lang, model)
+			}
+		}
+	}
+}
+
+func isKnownMimoOfficialPricing(model string, price *provider.Pricing) bool {
+	model = strings.TrimSpace(model)
+	if model == "" || price == nil {
+		return false
+	}
+	for _, prices := range []map[string]*provider.Pricing{mimoPricesUSD(), mimoPricesCNY()} {
+		if samePricing(price, prices[model]) {
+			return true
+		}
+	}
+	return false
 }
 
 func backfillMimoDomesticPrices(e *ProviderEntry) {
@@ -1667,6 +1785,7 @@ func LoadForRoot(root string) (*Config, error) {
 	normalizeDesktopOfficialProviderAccess(cfg)
 	normalizeOfficialDeepSeekModels(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
+	applyMiMoOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 	backfillDeepSeekPro(cfg)
@@ -1939,6 +2058,7 @@ func normalizeConfigForEdit(cfg *Config) {
 	normalizeLegacyProviderModels(cfg)
 	normalizeDesktopOfficialProviderAccess(cfg)
 	applyDeepSeekOfficialDefaultPricing(cfg)
+	applyMiMoOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
 }
@@ -2201,9 +2321,9 @@ func canonicalDesktopOfficialProviderName(name string) string {
 	switch strings.TrimSpace(name) {
 	case "deepseek-flash", "deepseek-pro":
 		return "deepseek"
-	case "mimo", "xiaomi-mimo", "xiaomi_mimo":
+	case "mimo", "xiaomi-mimo", "xiaomi_mimo", "mimo-pro", "mimo-flash":
 		return "mimo-api"
-	case "mimo-pro", "mimo-flash":
+	case "mimo-token-plan":
 		return "mimo-token-plan"
 	default:
 		return strings.TrimSpace(name)
