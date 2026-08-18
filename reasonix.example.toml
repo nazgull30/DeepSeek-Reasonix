@@ -122,6 +122,12 @@ effort         = "high"
 enabled = []   # empty = all built-in tools
 bash_timeout_seconds = 120   # foreground safety cap; set 0 for no tool-local cap
 
+[tools.bash]
+# prefix = "rtk"   # run every foreground bash command through the RTK token
+#                   # optimizer (rtk must be on PATH). Background commands are
+#                   # never prefixed. Empty/absent = commands run verbatim (default).
+prefix = ""
+
 [tools.background_jobs]
 stalled_warning_seconds = 900   # warn once per background job after this many quiet seconds; 0 disables
 

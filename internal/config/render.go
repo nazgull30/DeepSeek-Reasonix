@@ -330,6 +330,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	}
 	fmt.Fprintf(&b, "bash_timeout_seconds = %d   # foreground safety cap; set 0 for no tool-local cap\n\n", c.BashTimeoutSeconds())
 
+	b.WriteString("[tools.bash]\n")
+	fmt.Fprintf(&b, "prefix = %q   # non-empty (e.g. \"rtk\") runs every foreground bash command through it; empty = verbatim\n\n", c.Tools.Bash.Prefix)
+
 	b.WriteString("[tools.background_jobs]\n")
 	fmt.Fprintf(&b, "stalled_warning_seconds = %d   # warn once per background job after this many quiet seconds; 0 disables\n\n", c.BackgroundJobStalledWarningSeconds())
 
