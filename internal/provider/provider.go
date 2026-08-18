@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"reasonix/internal/nilutil"
@@ -456,17 +457,34 @@ type Usage struct {
 	FinishReason     string // "stop", "tool_calls", "length", "content_filter", "repetition_truncation", …
 }
 
-// Pricing is a provider's per-1M-token rates, used to estimate spend. Currency
-// is a display symbol or ISO-like code (default "¥"). toml tags let config decode it.
+// Pricing is a provider's per-1M-token rates, used to estimate spend. CacheHit,
+// Input and Output are the base (off-peak) rates. PeakCacheHit, PeakInput and
+// PeakOutput are the peak-hour rates where a provider bills differently by time
+// of day (e.g. DeepSeek's peak/off-peak schedule); zero peak values mean the
+// base rates apply around the clock. Cost picks the peak set automatically from
+// the request time. Currency is a display symbol or ISO-like code (default "¥").
+// toml tags let config decode it.
 type Pricing struct {
-	CacheHit float64 `toml:"cache_hit"` // per 1M cached prompt tokens
-	Input    float64 `toml:"input"`     // per 1M uncached prompt tokens
-	Output   float64 `toml:"output"`    // per 1M completion tokens
-	Currency string  `toml:"currency"`
+	CacheHit float64 `toml:"cache_hit"` // off-peak per 1M cached prompt tokens
+	Input    float64 `toml:"input"`     // off-peak per 1M uncached prompt tokens
+	Output   float64 `toml:"output"`    // off-peak per 1M completion tokens
+
+	PeakCacheHit float64 `toml:"peak_cache_hit"` // peak per 1M cached prompt tokens
+	PeakInput    float64 `toml:"peak_input"`     // peak per 1M uncached prompt tokens
+	PeakOutput   float64 `toml:"peak_output"`    // peak per 1M completion tokens
+
+	Currency string `toml:"currency"`
 }
 
-// Cost estimates the spend for a usage record.
+// Cost estimates the spend for a usage record at the current time, applying
+// peak rates when the request falls inside a peak billing window.
 func (p *Pricing) Cost(u *Usage) float64 {
+	return p.CostAt(u, time.Now())
+}
+
+// CostAt estimates the spend for a usage record at the given time, applying
+// peak rates when t falls inside a peak billing window.
+func (p *Pricing) CostAt(u *Usage, t time.Time) float64 {
 	if p == nil || u == nil {
 		return 0
 	}
@@ -477,9 +495,30 @@ func (p *Pricing) Cost(u *Usage) float64 {
 	} else if miss == 0 && hit > 0 && u.PromptTokens > hit {
 		miss = u.PromptTokens - hit
 	}
-	return (float64(hit)*p.CacheHit +
-		float64(miss)*p.Input +
-		float64(u.CompletionTokens)*p.Output) / 1e6
+	cacheHit, input, output := p.CacheHit, p.Input, p.Output
+	if p.PeakAt(t) {
+		cacheHit, input, output = p.PeakCacheHit, p.PeakInput, p.PeakOutput
+	}
+	return (float64(hit)*cacheHit +
+		float64(miss)*input +
+		float64(u.CompletionTokens)*output) / 1e6
+}
+
+// Peak reports whether the current UTC time falls in a peak billing window for
+// this rate card. Returns false when no peak rates are set.
+func (p *Pricing) Peak() bool {
+	return p.PeakAt(time.Now())
+}
+
+// PeakAt reports whether t falls in a peak billing window for this rate card.
+// Returns false when no peak rates are set. The window mirrors DeepSeek's
+// peak/off-peak schedule: 01:00-04:00 and 06:00-10:00 UTC (off-peak otherwise).
+func (p *Pricing) PeakAt(t time.Time) bool {
+	if p == nil || p.PeakCacheHit == 0 && p.PeakInput == 0 && p.PeakOutput == 0 {
+		return false
+	}
+	h := t.UTC().Hour()
+	return h >= 1 && h < 4 || h >= 6 && h < 10
 }
 
 // Symbol returns the currency display symbol, defaulting to "¥".

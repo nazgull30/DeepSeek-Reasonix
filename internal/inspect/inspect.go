@@ -71,7 +71,12 @@ type PricingInfo struct {
 	CacheHit float64 `json:"cache_hit"`
 	Input    float64 `json:"input"`
 	Output   float64 `json:"output"`
-	Currency string  `json:"currency"`
+
+	PeakCacheHit float64 `json:"peak_cache_hit"`
+	PeakInput    float64 `json:"peak_input"`
+	PeakOutput   float64 `json:"peak_output"`
+
+	Currency string `json:"currency"`
 }
 
 // Providers projects cfg.Providers, marking the default model and resolving key
@@ -95,10 +100,13 @@ func Providers(cfg *config.Config) []ProviderInfo {
 		}
 		if p := e.Price; p != nil {
 			info.Pricing = &PricingInfo{
-				CacheHit: p.CacheHit,
-				Input:    p.Input,
-				Output:   p.Output,
-				Currency: p.Symbol(),
+				CacheHit:     p.CacheHit,
+				Input:        p.Input,
+				Output:       p.Output,
+				PeakCacheHit: p.PeakCacheHit,
+				PeakInput:    p.PeakInput,
+				PeakOutput:   p.PeakOutput,
+				Currency:     p.Symbol(),
 			}
 		}
 		out = append(out, info)

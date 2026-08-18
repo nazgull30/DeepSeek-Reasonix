@@ -29,7 +29,7 @@ func TestBackfillDeepSeekProRestoresPro(t *testing.T) {
 	pro := hasModel(c, "deepseek-v4-pro")
 	if pro == nil {
 		t.Fatal("deepseek-v4-pro not restored")
-	} else if pro.Price == nil || pro.Price.Output != 0.87 || pro.Price.Currency != "$" {
+	} else if pro.Price == nil || pro.Price.Output != 1.98 || pro.Price.Currency != "$" {
 		t.Errorf("pro price not the preset: %+v", pro.Price)
 	}
 }
@@ -42,7 +42,7 @@ func TestBackfillDeepSeekProUsesConfiguredLanguage(t *testing.T) {
 	pro := hasModel(c, "deepseek-v4-pro")
 	if pro == nil {
 		t.Fatal("deepseek-v4-pro not restored")
-	} else if pro.Price == nil || pro.Price.Output != 6 || pro.Price.Currency != "¥" {
+	} else if pro.Price == nil || pro.Price.Output != 13.5 || pro.Price.Currency != "¥" {
 		t.Errorf("pro price = %+v, want CNY preset", pro.Price)
 	}
 }
@@ -287,7 +287,7 @@ func TestBackfillDeepSeekOfficialPrices(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if p.Prices["deepseek-v4-flash"].Output != 0.28 || p.Prices["deepseek-v4-pro"].Output != 0.87 {
+	if p.Prices["deepseek-v4-flash"].Output != 0.66 || p.Prices["deepseek-v4-pro"].Output != 1.98 {
 		t.Fatalf("deepseek prices = %+v, want current V4 flash/pro prices", p.Prices)
 	}
 }
@@ -305,7 +305,7 @@ func TestBackfillDeepSeekOfficialPricesUsesConfiguredLanguage(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing")
 	}
-	if p.Prices["deepseek-v4-flash"].Output != 2 || p.Prices["deepseek-v4-flash"].Currency != "¥" || p.Prices["deepseek-v4-pro"].Output != 6 || p.Prices["deepseek-v4-pro"].Currency != "¥" {
+	if p.Prices["deepseek-v4-flash"].Output != 4.5 || p.Prices["deepseek-v4-flash"].Currency != "¥" || p.Prices["deepseek-v4-pro"].Output != 13.5 || p.Prices["deepseek-v4-pro"].Currency != "¥" {
 		t.Fatalf("deepseek prices = %+v, want CNY flash/pro prices", p.Prices)
 	}
 }
@@ -355,14 +355,14 @@ func TestApplyDeepSeekOfficialDefaultPricingUsesConfiguredLanguage(t *testing.T)
 	if !ok {
 		t.Fatal("deepseek-flash provider missing")
 	}
-	if flash.Price == nil || flash.Price.Output != 2 || flash.Price.Currency != "¥" {
+	if flash.Price == nil || flash.Price.Output != 4.5 || flash.Price.Currency != "¥" {
 		t.Fatalf("flash price = %+v, want CNY preset", flash.Price)
 	}
 	pro, ok := c.Provider("deepseek-pro")
 	if !ok {
 		t.Fatal("deepseek-pro provider missing")
 	}
-	if pro.Price == nil || pro.Price.Output != 6 || pro.Price.Currency != "¥" {
+	if pro.Price == nil || pro.Price.Output != 13.5 || pro.Price.Currency != "¥" {
 		t.Fatalf("pro price = %+v, want CNY preset", pro.Price)
 	}
 }
@@ -436,10 +436,10 @@ func TestResetOfficialProviderPricingOnUpgradeRunsOnce(t *testing.T) {
 	if deepseek.Price != nil {
 		t.Fatalf("deepseek provider-wide price = %+v, want nil after reset", deepseek.Price)
 	}
-	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "$" || p.Output != 0.28 {
+	if p := deepseek.Prices["deepseek-v4-flash"]; p == nil || p.Currency != "$" || p.Output != 0.66 {
 		t.Fatalf("deepseek flash price = %+v, want USD default", p)
 	}
-	if p := deepseek.Prices["deepseek-v4-pro"]; p == nil || p.Currency != "$" || p.Output != 0.87 {
+	if p := deepseek.Prices["deepseek-v4-pro"]; p == nil || p.Currency != "$" || p.Output != 1.98 {
 		t.Fatalf("deepseek pro price = %+v, want USD default", p)
 	}
 	mimo, ok := got.Provider("mimo-api")

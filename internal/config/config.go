@@ -1336,19 +1336,19 @@ func Default() *Config {
 }
 
 func deepSeekV4FlashPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.0028, Input: 0.14, Output: 0.28, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.007, Input: 0.22, Output: 0.66, PeakCacheHit: 0.014, PeakInput: 0.44, PeakOutput: 1.32, Currency: "$"}
 }
 
 func deepSeekV4ProPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.003625, Input: 0.435, Output: 0.87, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.022, Input: 0.66, Output: 1.98, PeakCacheHit: 0.044, PeakInput: 1.32, PeakOutput: 3.96, Currency: "$"}
 }
 
 func deepSeekV4FlashPriceCNY() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.02, Input: 1, Output: 2, Currency: "¥"}
+	return &provider.Pricing{CacheHit: 0.05, Input: 1.5, Output: 4.5, PeakCacheHit: 0.10, PeakInput: 3.0, PeakOutput: 9.0, Currency: "¥"}
 }
 
 func deepSeekV4ProPriceCNY() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.025, Input: 3, Output: 6, Currency: "¥"}
+	return &provider.Pricing{CacheHit: 0.15, Input: 4.5, Output: 13.5, PeakCacheHit: 0.30, PeakInput: 9.0, PeakOutput: 27.0, Currency: "¥"}
 }
 
 func deepSeekV4Prices() map[string]*provider.Pricing {
@@ -1707,7 +1707,9 @@ func samePricing(a, b *provider.Pricing) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.CacheHit == b.CacheHit && a.Input == b.Input && a.Output == b.Output && a.Currency == b.Currency
+	return a.CacheHit == b.CacheHit && a.Input == b.Input && a.Output == b.Output &&
+		a.PeakCacheHit == b.PeakCacheHit && a.PeakInput == b.PeakInput && a.PeakOutput == b.PeakOutput &&
+		a.Currency == b.Currency
 }
 
 // Load builds the configuration: defaults, then user config, then project

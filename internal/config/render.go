@@ -529,6 +529,10 @@ func renderPricingInline(p *provider.Pricing) string {
 	if p == nil {
 		return "{}"
 	}
+	if p.PeakCacheHit != 0 || p.PeakInput != 0 || p.PeakOutput != 0 {
+		return fmt.Sprintf("{ cache_hit = %v, input = %v, output = %v, peak_cache_hit = %v, peak_input = %v, peak_output = %v, currency = %q }",
+			p.CacheHit, p.Input, p.Output, p.PeakCacheHit, p.PeakInput, p.PeakOutput, p.Symbol())
+	}
 	return fmt.Sprintf("{ cache_hit = %v, input = %v, output = %v, currency = %q }",
 		p.CacheHit, p.Input, p.Output, p.Symbol())
 }

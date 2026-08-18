@@ -565,7 +565,7 @@ func TestRenderTOMLRoundTripsPerModelPrices(t *testing.T) {
 	if !ok {
 		t.Fatal("deepseek provider missing after round trip")
 	}
-	if p.Prices["deepseek-v4-flash"].Input != 0.14 || p.Prices["deepseek-v4-pro"].Output != 0.87 {
+	if p.Prices["deepseek-v4-flash"].Input != 0.22 || p.Prices["deepseek-v4-pro"].Output != 1.98 || p.Prices["deepseek-v4-pro"].PeakOutput != 3.96 {
 		t.Fatalf("prices after round trip = %+v", p.Prices)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 // --- SanitizeToolPairing ---
@@ -278,6 +279,77 @@ func TestPricingCostZeroTokens(t *testing.T) {
 	u := &Usage{}
 	if got := p.Cost(u); got != 0 {
 		t.Errorf("zero tokens Cost = %f, want 0", got)
+	}
+}
+
+func TestPricingCostAppliesOffPeakByDefault(t *testing.T) {
+	p := &Pricing{
+		CacheHit: 0.5, Input: 2.0, Output: 10.0,
+		PeakCacheHit: 1.0, PeakInput: 4.0, PeakOutput: 20.0,
+	}
+	u := &Usage{CacheHitTokens: 1_000_000, CacheMissTokens: 500_000, CompletionTokens: 200_000}
+	// Off-peak at 12:00 UTC (outside 01-04 and 06-10 windows): base rates.
+	offPeak := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	if got := p.CostAt(u, offPeak); got != 3.5 {
+		t.Errorf("off-peak Cost = %f, want 3.5", got)
+	}
+}
+
+func TestPricingCostAppliesPeakRatesInPeakWindow(t *testing.T) {
+	p := &Pricing{
+		CacheHit: 0.5, Input: 2.0, Output: 10.0,
+		PeakCacheHit: 1.0, PeakInput: 4.0, PeakOutput: 20.0,
+	}
+	u := &Usage{CacheHitTokens: 1_000_000, CacheMissTokens: 500_000, CompletionTokens: 200_000}
+	// Peak at 08:00 UTC (06-10 window): (1M*1.0 + 500K*4.0 + 200K*20.0)/1M = 7.0.
+	peak := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	if got := p.CostAt(u, peak); got != 7.0 {
+		t.Errorf("peak Cost = %f, want 7.0", got)
+	}
+}
+
+func TestPricingCostIgnoresPeakWhenNoPeakRatesSet(t *testing.T) {
+	p := &Pricing{CacheHit: 0.5, Input: 2.0, Output: 10.0}
+	u := &Usage{CacheHitTokens: 1_000_000, CacheMissTokens: 0, CompletionTokens: 0}
+	peak := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	if got := p.CostAt(u, peak); got != 0.5 {
+		t.Errorf("no-peak Cost = %f, want 0.5", got)
+	}
+}
+
+func TestPricingPeakAtWindow(t *testing.T) {
+	p := &Pricing{PeakCacheHit: 1, PeakInput: 1, PeakOutput: 1}
+	cases := []struct {
+		hour int
+		want bool
+	}{
+		{hour: 0, want: false}, // off-peak before first window
+		{hour: 1, want: true},  // 01-04 peak
+		{hour: 3, want: true},
+		{hour: 4, want: false},
+		{hour: 5, want: false},
+		{hour: 6, want: true}, // 06-10 peak
+		{hour: 9, want: true},
+		{hour: 10, want: false},
+		{hour: 12, want: false},
+		{hour: 23, want: false},
+	}
+	for _, tc := range cases {
+		tm := time.Date(2026, 8, 18, tc.hour, 30, 0, 0, time.UTC)
+		if got := p.PeakAt(tm); got != tc.want {
+			t.Errorf("PeakAt(%02d:30 UTC) = %v, want %v", tc.hour, got, tc.want)
+		}
+	}
+}
+
+func TestPricingPeakAtDefaultsOffPeakForNil(t *testing.T) {
+	var p *Pricing
+	if got := p.Peak(); got {
+		t.Errorf("nil Pricing.Peak() = true, want false")
+	}
+	p = &Pricing{}
+	if got := p.Peak(); got {
+		t.Errorf("zero Pricing.Peak() = true, want false")
 	}
 }
 
