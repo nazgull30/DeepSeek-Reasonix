@@ -25,8 +25,11 @@ type Workspace struct {
 	WriteRoots  []string
 	Bash        sandbox.Spec
 	BashTimeout time.Duration
-	Search      SearchSpec
-	ProxySpec   netclient.ProxySpec
+	// BashPrefix, when non-empty, is prepended to every foreground bash command
+	// (e.g. "rtk"). See WrapBashPrefix.
+	BashPrefix string
+	Search     SearchSpec
+	ProxySpec  netclient.ProxySpec
 }
 
 // Tools returns the built-in tools bound to the workspace, ready to Add to a
@@ -51,7 +54,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 		"delete_range":  deleteRange{workDir: w.Dir, roots: roots},
 		"delete_symbol": deleteSymbol{workDir: w.Dir, roots: roots},
 		"code_index":    codeIndex{workDir: w.Dir},
-		"bash":          bash{workDir: w.Dir, sb: w.Bash, timeout: w.BashTimeout},
+		"bash":          WrapBashPrefix(bash{workDir: w.Dir, sb: w.Bash, timeout: w.BashTimeout}, w.BashPrefix),
 		"ls":            listDir{workDir: w.Dir},
 		"glob":          globTool{workDir: w.Dir},
 		"grep":          grepTool{workDir: w.Dir, rg: w.Search.RgPath},

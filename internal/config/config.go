@@ -1055,9 +1055,18 @@ func clonePricing(p *provider.Pricing) *provider.Pricing {
 type ToolsConfig struct {
 	Enabled            []string             `toml:"enabled"`
 	BashTimeoutSeconds *int                 `toml:"bash_timeout_seconds"`
+	Bash               BashConfig           `toml:"bash"`
 	BackgroundJobs     BackgroundJobsConfig `toml:"background_jobs"`
 	Search             SearchConfig         `toml:"search"`
 	Shell              ShellConfig          `toml:"shell"`
+}
+
+// BashConfig tunes the bash tool's command execution. Prefix, when non-empty,
+// is prepended to every foreground command (e.g. "rtk" to wrap each command in
+// the RTK token optimizer). Background commands are never prefixed. Empty means
+// the command runs verbatim — the default, so the wrapper is opt-in.
+type BashConfig struct {
+	Prefix string `toml:"prefix"`
 }
 
 const (
