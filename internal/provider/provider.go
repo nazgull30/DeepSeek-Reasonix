@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"reasonix/internal/nilutil"
 )
@@ -94,6 +95,66 @@ type Request struct {
 // "An assistant message with 'tool_calls' must be followed by tool messages
 // responding to each 'tool_call_id'".
 const interruptedToolResult = "[no result: the previous turn was interrupted before this tool call completed]"
+
+// maxToolResultBytes bounds a single provider-visible tool result. Fresh tool
+// output is truncated to this at execution time (internal/agent), but stored or
+// resumed results can still ride to the wire oversized; a large tool result at
+// the prefix boundary destabilizes the provider-side KV-cache key (every resume
+// becomes a cache miss) and inflates token cost. Capping at send time keeps the
+// cacheable prefix stable without touching canonical storage.
+const maxToolResultBytes = 32 * 1024
+
+// BoundToolResults truncates any tool-result Content that exceeds
+// maxToolResultBytes, head+tails on rune boundaries, so an oversized stored or
+// resumed result can no longer destabilize the KV-cache prefix or inflate the
+// request. It never allocates or copies when nothing is oversized (healthy
+// sessions pass through unchanged, keeping the prefix key stable), never drops
+// a message, and never mutates the caller's slice (copy-on-write). Tool calls
+// and their results are otherwise untouched.
+func BoundToolResults(msgs []Message) []Message {
+	oversized := -1
+	for i, m := range msgs {
+		if m.Role == RoleTool && len(m.Content) > maxToolResultBytes {
+			oversized = i
+			break
+		}
+	}
+	if oversized < 0 {
+		return msgs
+	}
+	out := make([]Message, len(msgs))
+	copy(out, msgs)
+	for i := range out {
+		m := out[i]
+		if m.Role != RoleTool || len(m.Content) <= maxToolResultBytes {
+			continue
+		}
+		m.Content = boundToolResult(m.Content)
+		out[i] = m
+	}
+	return out
+}
+
+// boundToolResult head+tails s on rune boundaries, mirroring the agent's
+// truncation notice so the model sees the gap and knows to re-run for the middle.
+func boundToolResult(s string) string {
+	keep := maxToolResultBytes / 2
+	head := snapRuneStart(s, 0, keep)
+	tail := snapRuneStart(s, len(s)-keep, len(s))
+	omitted := len(s) - len(head) - len(tail)
+	return head + fmt.Sprintf("\n\n…[tool result truncated: %d of %d bytes elided — re-run the tool for the middle]…\n\n", omitted, len(s)) + tail
+}
+
+// snapRuneStart returns s[lo:hi] with bounds nudged outward onto rune starts.
+func snapRuneStart(s string, lo, hi int) string {
+	for lo > 0 && !utf8.RuneStart(s[lo]) {
+		lo--
+	}
+	for hi < len(s) && !utf8.RuneStart(s[hi]) {
+		hi++
+	}
+	return s[lo:hi]
+}
 
 // SanitizeToolPairing is the provider-side alias for NormalizeMessages. It repairs
 // a history so it satisfies the tool-call contract the OpenAI-compatible and

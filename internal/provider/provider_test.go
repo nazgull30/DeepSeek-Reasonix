@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // --- SanitizeToolPairing ---
@@ -562,5 +564,66 @@ func TestMockProviderImplementsInterface(t *testing.T) {
 	got := <-ch
 	if got.Type != ChunkDone {
 		t.Errorf("Chunk.Type = %d, want ChunkDone", got.Type)
+	}
+}
+
+func TestBoundToolResultsLeavesHealthyUnchanged(t *testing.T) {
+	in := []Message{
+		{Role: RoleSystem, Content: "sys"},
+		{Role: RoleUser, Content: "q"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "ls"}}},
+		{Role: RoleTool, ToolCallID: "c1", Name: "ls", Content: "main.go"},
+	}
+	out := BoundToolResults(in)
+	if &out[0] != &in[0] {
+		t.Fatalf("healthy history should return the input slice without allocating")
+	}
+	for i := range in {
+		if out[i].Role != in[i].Role || out[i].Content != in[i].Content || out[i].ToolCallID != in[i].ToolCallID {
+			t.Fatalf("healthy message %d mutated: %+v -> %+v", i, in[i], out[i])
+		}
+	}
+}
+
+func TestBoundToolResultsTruncatesOversizedResult(t *testing.T) {
+	big := strings.Repeat("x", maxToolResultBytes+8192)
+	in := []Message{
+		{Role: RoleSystem, Content: "sys"},
+		{Role: RoleUser, Content: "run it"},
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "c1", Name: "bash"}}},
+		{Role: RoleTool, ToolCallID: "c1", Name: "bash", Content: big},
+		{Role: RoleAssistant, Content: "done"},
+	}
+	out := BoundToolResults(in)
+	if &out[0] == &in[0] {
+		t.Fatalf("oversized history must copy-on-write, not reuse the input slice")
+	}
+	if len(out) != len(in) {
+		t.Fatalf("result changed message count: %d -> %d", len(in), len(out))
+	}
+	trunc := out[3].Content
+	if len(trunc) >= len(big) {
+		t.Fatalf("result not truncated: len %d >= %d", len(trunc), len(big))
+	}
+	if !strings.Contains(trunc, "truncated") {
+		t.Fatalf("truncation notice missing: %q", trunc)
+	}
+	// Canonical storage is never mutated.
+	if in[3].Content != big {
+		t.Fatalf("canonical input mutated")
+	}
+}
+
+func TestBoundToolResultsHeadAndTailPreserveRuneBoundaries(t *testing.T) {
+	// Build a string of multibyte runes, oversized at rune boundaries.
+	big := strings.Repeat("界", maxToolResultBytes/2+1)
+	big = big + strings.Repeat("a", maxToolResultBytes/2)
+	in := []Message{{Role: RoleTool, ToolCallID: "c1", Name: "x", Content: big}}
+	out := BoundToolResults(in)
+	if len(out[0].Content) >= len(big) {
+		t.Fatalf("not truncated")
+	}
+	if !utf8.ValidString(out[0].Content) {
+		t.Fatalf("truncated result is invalid UTF-8")
 	}
 }
