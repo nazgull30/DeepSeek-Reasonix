@@ -131,6 +131,13 @@ func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
 	return d + time.Duration(rand.Intn(250))*time.Millisecond
 }
 
+// BackoffDelay returns the capped exponential backoff + jitter for attempt n
+// (1-based) with no Retry-After hint. Exported for callers pacing their own
+// retry loops (e.g. mid-stream reconnects) off the same policy as SendWithRetry.
+func BackoffDelay(attempt int) time.Duration {
+	return backoffDelay(attempt, 0)
+}
+
 func parseRetryAfter(resp *http.Response) time.Duration {
 	v := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if v == "" {
