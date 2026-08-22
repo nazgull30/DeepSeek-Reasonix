@@ -111,19 +111,20 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		return nil, fmt.Errorf("openai: network: %w", err)
 	}
 	return &client{
-		name:         name,
-		apiKey:       cfg.APIKey,
-		keyEnv:       keyEnv,
-		keySource:    keySource,
-		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
-		model:        cfg.Model,
-		deepseek:     deepseek,
-		minimax:      minimax,
-		vision:       vision,
-		visionDetail: visionDetail,
-		effort:       effort,
-		http:         httpClient,
-		idleTimeout:  defaultStreamIdleTimeout,
+		name:          name,
+		apiKey:        cfg.APIKey,
+		keyEnv:        keyEnv,
+		keySource:     keySource,
+		baseURL:       strings.TrimRight(cfg.BaseURL, "/"),
+		model:         cfg.Model,
+		deepseek:      deepseek,
+		minimax:       minimax,
+		vision:        vision,
+		visionDetail:  visionDetail,
+		effort:        effort,
+		http:          httpClient,
+		idleTimeout:   defaultStreamIdleTimeout,
+		replayBackoff: defaultReplayBackoff,
 	}, nil
 }
 
@@ -151,7 +152,10 @@ type client struct {
 	visionDetail string        // image_url detail hint (low|high); "" = auto/omit
 	effort       string        // reasoning_effort for OpenAI; thinking.type for MiniMax; "" = auto/provider default
 	idleTimeout  time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed       atomic.Bool   // a request has succeeded — gate transient-401 retry
+	// replayBackoff delays each mid-stream reconnect; defaultReplayBackoff
+	// unless a test overrides (zero delay keeps reconnect tests instant).
+	replayBackoff func(attempt int) time.Duration
+	authed        atomic.Bool // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
@@ -218,14 +222,32 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 }
 
 // maxStreamReconnects bounds how many times a mid-stream connection drop is
-// replayed from scratch before the error is surfaced — each replay re-runs the
-// whole request (cheap under prompt caching, but not free).
-const maxStreamReconnects = 3
+// replayed from scratch before the error is surfaced — each replay re-runs
+// the whole request (cheap under prompt caching, but not free). Five rides out
+// a persistently flaky proxy that drops most early streams; replays are paced
+// by client.replayBackoff so a strained endpoint isn't hammered.
+const maxStreamReconnects = 5
+
+// maxReplayBackoff caps the wait between mid-stream reconnect attempts. The
+// shared BackoffDelay policy caps at 15s for request-level retries; a stream
+// cut should recover snappier than that or surface, not stall the turn.
+const maxReplayBackoff = 2 * time.Second
+
+// defaultReplayBackoff paces streamWithReconnect replays: capped exponential
+// backoff + jitter off the shared SendWithRetry policy. Stored per-client so a
+// test can zero it (mirrors client.idleTimeout) without racing other streams.
+func defaultReplayBackoff(attempt int) time.Duration {
+	if d := provider.BackoffDelay(attempt); d < maxReplayBackoff {
+		return d
+	}
+	return maxReplayBackoff
+}
 
 // streamWithReconnect drives readStream and, when the connection is cut before
 // any model output has been forwarded, replays the request rather than failing
-// the turn. Once a token (reasoning/text/tool-call) has been emitted, a replay
-// would duplicate output, so the error is surfaced instead.
+// the turn — paced by client.replayBackoff so repeated cuts don't hammer an
+// already-strained endpoint. Once a token (reasoning/text/tool-call) has been
+// emitted, a replay would duplicate output, so the error is surfaced instead.
 func (c *client) streamWithReconnect(ctx context.Context, resp *http.Response, newReq func(context.Context) (*http.Request, error), out chan<- provider.Chunk) {
 	defer close(out)
 	for attempt := 0; ; attempt++ {
@@ -244,6 +266,12 @@ func (c *client) streamWithReconnect(ctx context.Context, resp *http.Response, n
 		if attempt >= maxStreamReconnects {
 			out <- provider.Chunk{Type: provider.ChunkError, Err: err}
 			return
+		}
+		select { // pace replays off a strained endpoint; abort promptly on user cancel
+		case <-ctx.Done():
+			out <- provider.Chunk{Type: provider.ChunkError, Err: ctx.Err()}
+			return
+		case <-time.After(c.replayBackoff(attempt + 1)):
 		}
 		next, rerr := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
 		if rerr != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"reasonix/internal/provider"
 )
@@ -235,5 +236,98 @@ func TestStreamDoesNotReplayAfterOutput(t *testing.T) {
 	}
 	if reqs != 1 {
 		t.Errorf("server saw %d requests, want 1 (no replay after output)", reqs)
+	}
+}
+
+// TestStreamSurvivesRepeatedEarlyCuts rides out a proxy that drops most early
+// streams: maxStreamReconnects pre-output cuts are each replayed (paced by
+// client.replayBackoff), and the following attempt delivers cleanly. The
+// caller sees one clean stream with no error.
+func TestStreamSurvivesRepeatedEarlyCuts(t *testing.T) {
+	var reqs int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs++
+		w.Header().Set("Content-Type", "text/event-stream")
+		if reqs <= maxStreamReconnects {
+			_, _ = io.WriteString(w, ": keep-alive\n\n") // clean close: no [DONE], no finish_reason
+			return
+		}
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p.(*client).replayBackoff = func(int) time.Duration { return 0 } // keep the test instant
+	ch, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	var text strings.Builder
+	for chunk := range ch {
+		switch chunk.Type {
+		case provider.ChunkError:
+			t.Fatalf("cuts within the reconnect budget should recover, not surface: %v", chunk.Err)
+		case provider.ChunkText:
+			text.WriteString(chunk.Text)
+		}
+	}
+	if text.String() != "recovered" {
+		t.Errorf("text = %q, want %q", text.String(), "recovered")
+	}
+	if reqs != maxStreamReconnects+1 {
+		t.Errorf("server saw %d requests, want %d (%d cuts + one success)", reqs, maxStreamReconnects+1, maxStreamReconnects)
+	}
+}
+
+// TestStreamSurfacesAfterReconnectBudgetExhausted bounds the retry loop: when
+// every replay within the budget is also cut before output, the error must
+// surface rather than the client looping forever.
+func TestStreamSurfacesAfterReconnectBudgetExhausted(t *testing.T) {
+	var reqs int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, ": keep-alive\n\n") // always a clean pre-output cut
+	}))
+	defer srv.Close()
+
+	p, err := New(provider.Config{Name: "deepseek", BaseURL: srv.URL, Model: "deepseek-v4", APIKey: "k"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	p.(*client).replayBackoff = func(int) time.Duration { return 0 }
+	ch, err := p.Stream(context.Background(), provider.Request{Messages: []provider.Message{{Role: provider.RoleUser, Content: "hi"}}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	gotErr := false
+	for chunk := range ch {
+		if chunk.Type == provider.ChunkError {
+			gotErr = true
+		}
+	}
+	if !gotErr {
+		t.Error("exhausting the reconnect budget should surface a ChunkError")
+	}
+	if reqs != maxStreamReconnects+1 {
+		t.Errorf("server saw %d requests, want %d (initial + %d replays)", reqs, maxStreamReconnects+1, maxStreamReconnects)
+	}
+}
+
+// TestDefaultReplayBackoffPacesAndCaps checks both ends of the pacing policy:
+// low attempts wait a nonzero interval, and deep attempts clamp to the stream
+// ceiling instead of inheriting SendWithRetry's much larger cap.
+func TestDefaultReplayBackoffPacesAndCaps(t *testing.T) {
+	if d := defaultReplayBackoff(1); d <= 0 {
+		t.Errorf("defaultReplayBackoff(1) = %v, want > 0", d)
+	}
+	if d := defaultReplayBackoff(30); d > maxReplayBackoff {
+		t.Errorf("defaultReplayBackoff(30) = %v, want <= %v", d, maxReplayBackoff)
 	}
 }
