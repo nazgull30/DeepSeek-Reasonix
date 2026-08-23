@@ -191,3 +191,31 @@ func TestReadMissingCmd(t *testing.T) {
 		t.Fatal("expected error for missing command")
 	}
 }
+
+func TestReadForcesUTF8Locale(t *testing.T) {
+	orig := readCmd
+	readCmd = []string{"printenv", "LC_ALL"}
+	defer func() { readCmd = orig }()
+
+	out, err := Read()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.TrimSpace(out) != "en_US.UTF-8" {
+		t.Fatalf("expected child env LC_ALL=en_US.UTF-8, got %q", out)
+	}
+}
+
+func TestWriteForcesUTF8Locale(t *testing.T) {
+	orig := writeCmd
+	writeCmd = []string{"sh", "-c", "printf '%s' \"$LC_ALL\" >&2; exit 1"}
+	defer func() { writeCmd = orig }()
+
+	err := Write("test")
+	if err == nil {
+		t.Fatal("expected error from failing write command")
+	}
+	if !strings.Contains(err.Error(), "en_US.UTF-8") {
+		t.Fatalf("expected forced UTF-8 locale in child env, got %q", err.Error())
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -13,6 +15,70 @@ import (
 
 // errCancelled is returned by selectOne when the user aborts (q or Ctrl-C).
 var errCancelled = errors.New("selection cancelled")
+
+// appendSearchText decodes printable UTF-8 runes from a raw stdin chunk and
+// appends them to query, so search keeps working for multibyte input such as
+// Cyrillic. It reports whether anything was appended and returns any trailing
+// truncated sequence so the caller can prepend it to the next read (a rune may
+// straddle two reads).
+func appendSearchText(query string, b []byte) (next string, added bool, carry []byte) {
+	next = query
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		if r == utf8.RuneError && size <= 1 {
+			if rem := b[i:]; incompleteUTF8(rem) {
+				return next, added, append([]byte(nil), rem...)
+			}
+			i++ // invalid byte: drop it
+			continue
+		}
+		if unicode.IsPrint(r) {
+			next += string(r)
+			added = true
+		}
+		i += size
+	}
+	return next, added, nil
+}
+
+// incompleteUTF8 reports whether b is a valid but truncated UTF-8 sequence:
+// a lead byte followed by fewer continuation bytes than it requires.
+func incompleteUTF8(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	var want int
+	switch c := b[0]; {
+	case c&0x80 == 0x00 || c&0xC0 == 0x80:
+		return false // ASCII or stray continuation byte
+	case c&0xE0 == 0xC0:
+		want = 2
+	case c&0xF0 == 0xE0:
+		want = 3
+	case c&0xF8 == 0xF0:
+		want = 4
+	default:
+		return false // invalid lead byte
+	}
+	if len(b) >= want {
+		return false
+	}
+	for _, c := range b[1:] {
+		if c&0xC0 != 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// trimLastRune drops the final rune from s, keeping multibyte chars whole.
+func trimLastRune(s string) string {
+	r := []rune(s)
+	if len(r) == 0 {
+		return s
+	}
+	return string(r[:len(r)-1])
+}
 
 type menuItem struct {
 	name string
@@ -175,12 +241,17 @@ func selectOne(label string, items []menuItem) (int, error) {
 	redraw() // initial draw
 
 	buf := make([]byte, 8)
+	var pend []byte // carries a truncated UTF-8 rune between reads while searching
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			return 0, err
 		}
 		k := buf[:n]
+		if len(pend) > 0 {
+			k = append(pend, k...)
+			pend = nil
+		}
 
 		if searching {
 			switch {
@@ -202,7 +273,7 @@ func selectOne(label string, items []menuItem) (int, error) {
 				}
 			case k[0] == 127 || k[0] == 8: // backspace
 				if len(searchQuery) > 0 {
-					searchQuery = searchQuery[:len(searchQuery)-1]
+					searchQuery = trimLastRune(searchQuery)
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					sel = 0
@@ -212,15 +283,26 @@ func selectOne(label string, items []menuItem) (int, error) {
 			case k[0] == 3: // Ctrl-C
 				fmt.Fprint(w, "\r\n")
 				return 0, errCancelled
-			case k[0] >= 32 && k[0] < 127: // printable
+			case k[0] >= 32 && k[0] < 127: // printable ASCII
 				searchQuery += string(k[0])
 				filtered = filterMenuItems(items, searchQuery)
 				filterIdx = filterIndices(items, searchQuery)
 				sel = 0
 				scroll = 0
 				redraw()
-			default:
-				continue
+			default: // multibyte printable text (e.g. Cyrillic)
+				q, added, carry := appendSearchText(searchQuery, k)
+				if carry != nil {
+					pend = carry
+				}
+				if added {
+					searchQuery = q
+					filtered = filterMenuItems(items, searchQuery)
+					filterIdx = filterIndices(items, searchQuery)
+					sel = 0
+					scroll = 0
+					redraw()
+				}
 			}
 			continue
 		}
@@ -359,12 +441,17 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 	redraw()
 
 	buf := make([]byte, 8)
+	var pend []byte // carries a truncated UTF-8 rune between reads while searching
 	for {
 		n, err := os.Stdin.Read(buf)
 		if err != nil {
 			return nil, err
 		}
 		k := buf[:n]
+		if len(pend) > 0 {
+			k = append(pend, k...)
+			pend = nil
+		}
 
 		if searching {
 			switch {
@@ -398,23 +485,21 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 				}
 			case k[0] == 127 || k[0] == 8: // backspace
 				if len(searchQuery) > 0 {
-					searchQuery = searchQuery[:len(searchQuery)-1]
+					searchQuery = trimLastRune(searchQuery)
 					filtered = filterMenuItems(items, searchQuery)
 					filterIdx = filterIndices(items, searchQuery)
 					cur = 0
 					scroll = 0
-					redraw()
 				}
 			case k[0] == 3: // Ctrl-C
 				fmt.Fprint(w, "\r\n")
 				return nil, errCancelled
-			case k[0] >= 32 && k[0] < 127:
+			case k[0] >= 32 && k[0] < 127: // printable ASCII
 				searchQuery += string(k[0])
 				filtered = filterMenuItems(items, searchQuery)
 				filterIdx = filterIndices(items, searchQuery)
 				cur = 0
 				scroll = 0
-				redraw()
 			case len(k) >= 3 && k[0] == 27 && k[1] == '[' && k[2] == 'A':
 				if cur > 0 {
 					cur--
@@ -431,8 +516,19 @@ func selectMany(label string, items []menuItem) ([]int, error) {
 				if cur < len(filtered)-1 {
 					cur++
 				}
-			default:
-				continue
+			default: // multibyte printable text (e.g. Cyrillic)
+				q, added, carry := appendSearchText(searchQuery, k)
+				if carry != nil {
+					pend = carry
+				}
+				if !added {
+					continue // ignore unmatched keys, no redraw
+				}
+				searchQuery = q
+				filtered = filterMenuItems(items, searchQuery)
+				filterIdx = filterIndices(items, searchQuery)
+				cur = 0
+				scroll = 0
 			}
 			redraw()
 			continue
