@@ -1124,6 +1124,16 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, pasteClipboard())
 			return m, finalize(m, cmds)
+		case "ctrl+x", "super+x", "meta+x":
+			// Copy the composer draft to the clipboard. Non-destructive: the
+			// input stays so the user can keep editing after grabbing it.
+			text := m.input.Value()
+			if strings.TrimSpace(text) == "" {
+				m.notice(i18n.M.InputCopyEmpty)
+				return m, finalize(m, nil)
+			}
+			m.notice(fmt.Sprintf("%s (%d chars)", i18n.M.InputCopied, len([]rune(text))))
+			return m, tea.Batch(copyToClipboard(text), finalize(m, nil))
 		case "ctrl+y", "super+y", "meta+y":
 			m.toggleYoloMode()
 			return m, nil
@@ -4333,7 +4343,7 @@ func renderTUIBanner(label, missing string, width int) string {
 	var b strings.Builder
 	b.WriteString(accent("◆") + " " + bold("reasonix") + "  " + dim("· "+label) + "\n")
 	b.WriteString(dim("  "+i18n.M.ChatTip) + "\n")
-	b.WriteString(dim("  tip: Ctrl+C copies selection · Ctrl+Shift+M toggles mouse capture") + "\n")
+	b.WriteString(dim("  tip: Ctrl+C copies selection · Ctrl+X copies the input · Ctrl+Shift+M toggles mouse capture") + "\n")
 	if missing != "" {
 		b.WriteString(wrapForViewport("  ! "+missing, width, activeCLITheme.warn) + "\n")
 	}
