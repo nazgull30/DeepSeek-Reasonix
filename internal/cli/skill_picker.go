@@ -101,7 +101,7 @@ func (m chatTUI) handleSkillPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			return m.saveSkillPick()
 		case "backspace":
 			if len(p.query) > 0 {
-				p.query = p.query[:len(p.query)-1]
+				p.query = trimLastRune(p.query)
 				p.sel = clampSel(p.sel, p.filteredSkills())
 			}
 			return m, nil

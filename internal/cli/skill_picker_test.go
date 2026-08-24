@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -444,6 +445,29 @@ func TestSkillPickerSearchEscExitsSearch(t *testing.T) {
 	}
 	if cm.skillPick.searchActive {
 		t.Fatal("Esc did not exit search mode")
+	}
+}
+
+func TestSkillPickerSearchBackspaceKeepsMultibyte(t *testing.T) {
+	skills := makeTestSkills()
+	m := chatTUI{
+		width:  80,
+		skills: skills,
+		skillPick: &skillPicker{
+			mode:         pickerSkills,
+			skills:       skills,
+			searchActive: true,
+			query:        "прив",
+		},
+	}
+
+	next, _ := m.handleSkillPickerKey(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	cm := next.(chatTUI)
+	if got := cm.skillPick.query; got != "при" {
+		t.Fatalf("backspace corrupted multibyte query: %q", got)
+	}
+	if !utf8.ValidString(cm.skillPick.query) {
+		t.Fatalf("query is not valid UTF-8: %q", cm.skillPick.query)
 	}
 }
 

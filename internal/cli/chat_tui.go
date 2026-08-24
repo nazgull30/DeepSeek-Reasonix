@@ -191,6 +191,10 @@ type chatTUI struct {
 	wrappedLines []string // transcript wrapped to viewport width (rendered each frame)
 	viewport     viewport.Model
 	sel          selection
+	// inputSel is the live left-drag text selection over the composer lane.
+	// Coordinates are visible composer rows (row 0 = first visible row), so a
+	// scrolled tall draft keeps the highlight pinned to what's on screen.
+	inputSel selection
 	// autoScroll drives edge-drag scrolling: -1 up, +1 down, 0 off. dragX is the
 	// column the drag is held at, so the ticker can extend the selection head.
 	autoScroll int
@@ -785,21 +789,43 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseClickMsg:
-		// Right-click copies the active selection (Windows Terminal convention);
-		// left-press in the transcript region begins a text selection — unless
-		// the click lands on the scrollbar or a shell-output hint line.
-		if msg.Button == tea.MouseRight && m.sel.active && !m.sel.empty() {
-			text := m.selectedText()
-			m.sel = selection{}
-			return m, tea.Batch(copyToClipboard(text), finalize(m, cmds))
+		// Right-click copies the active selection (Windows Terminal convention),
+		// transcript first, then composer; left-press in the transcript region
+		// begins a text selection — unless the click lands on the scrollbar or
+		// a shell-output hint line. A left-press inside the composer starts an
+		// input-lane selection instead.
+		if msg.Button == tea.MouseRight {
+			switch {
+			case m.sel.active && !m.sel.empty():
+				text := m.selectedText()
+				m.sel = selection{}
+				return m, tea.Batch(copyToClipboard(text), finalize(m, cmds))
+			case m.inputSel.active && !m.inputSel.empty():
+				text := m.selectedInputText(m.inputSel)
+				m.inputSel = selection{}
+				return m, tea.Batch(copyToClipboard(text), finalize(m, cmds))
+			}
 		}
 		if msg.Button == tea.MouseLeft && m.inScrollbar(msg.X, msg.Y) {
 			m.sel = selection{}
+			m.inputSel = selection{}
 			m.autoScroll = 0
 			m.scrollbarDrag = true
 			m.scrollbarGrabOffset = m.scrollbarGrabRowOffset(msg.Y)
 			m.dragScrollbar(msg.Y)
 			return m, nil
+		}
+		if msg.Button == tea.MouseLeft {
+			if top, height, ok := m.composerRegion(); ok && msg.Y >= top && msg.Y < top+height {
+				// Composer drag: select input text. The transcript selection
+				// is dismissed so only one highlight is live at a time.
+				m.sel = selection{}
+				m.autoScroll = 0
+				at := m.inputCaret(msg.X, msg.Y)
+				m.inputSel = selection{active: true, anchor: at, head: at}
+				return m, finalize(m, cmds)
+			}
+			m.inputSel = selection{}
 		}
 		if msg.Button == tea.MouseLeft && msg.Y < m.viewport.Height() {
 			// Check if the clicked line is a shell-output hint.
@@ -825,7 +851,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Drag extends the live selection (CellMotion only reports motion while
 		// a button is held, so this is a drag). A drag held against the top or
 		// bottom edge starts an auto-scroll ticker so the selection can run past
-		// the visible window.
+		// the visible window. The composer lane extends its own selection and
+		// clamps to the composer rows instead of scrolling.
+		if m.inputSel.active {
+			m.inputSel.head = m.inputCaret(msg.X, msg.Y)
+			return m, nil
+		}
 		if m.sel.active {
 			m.sel.head = m.transcriptCaret(msg.X, msg.Y)
 			m.dragX = msg.X
@@ -873,6 +904,9 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseLeft && m.sel.active && m.sel.empty() {
 			m.sel = selection{}
 		}
+		if msg.Button == tea.MouseLeft && m.inputSel.active && m.inputSel.empty() {
+			m.inputSel = selection{}
+		}
 		return m, nil
 
 	case tea.PasteMsg:
@@ -894,9 +928,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		// Any keystroke dismisses a finished selection (copy is a right-click),
-		// except Ctrl+C/Super+C/Meta+C which may copy the selection to clipboard.
+		// except Ctrl+C/Super+C/Meta+C which may copy the selection to clipboard
+		// and Ctrl+X which may copy the composer selection instead of the whole
+		// draft.
 		sel := m.sel
 		m.sel = selection{}
+		inputSel := m.inputSel
+		m.inputSel = selection{}
 		// Transcript scroll keys work in any state (PgUp/PgDn are never text).
 		switch msg.String() {
 		case "pgup":
@@ -1035,6 +1073,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "esc":
+			// A live composer selection is the most specific in-progress state:
+			// the first Esc just deselects it.
+			if inputSel.active && !inputSel.empty() {
+				return m, finalize(m, cmds)
+			}
 			// "Back out" of the most specific in-progress state: un-send a just-sent
 			// turn (server not yet replied), cancel a streaming turn, or clear
 			// typed-but-unsent input. Mode switches (normal/plan/YOLO) are
@@ -1073,6 +1116,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "ctrl+c", "ctrl+shift+c", "super+c", "meta+c":
+			// A composer selection copies regardless of run state — reading the
+			// draft never interferes with a streaming turn.
+			if inputSel.active && !inputSel.empty() {
+				return m, tea.Batch(copyToClipboard(m.selectedInputText(inputSel)), finalize(m, cmds))
+			}
 			if m.state == tuiRunning {
 				// Selection takes precedence: copy instead of cancel, same as idle.
 				if sel.active && !sel.empty() {
@@ -1124,6 +1172,20 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, pasteClipboard())
 			return m, finalize(m, cmds)
+		case "ctrl+x", "super+x", "meta+x":
+			// Copy the composer draft to the clipboard. Non-destructive: the
+			// input stays so the user can keep editing after grabbing it. With
+			// an active mouse selection, only the selected span is copied.
+			text := m.input.Value()
+			if inputSel.active && !inputSel.empty() {
+				text = m.selectedInputText(inputSel)
+			}
+			if strings.TrimSpace(text) == "" {
+				m.notice(i18n.M.InputCopyEmpty)
+				return m, finalize(m, nil)
+			}
+			m.notice(fmt.Sprintf("%s (%d chars)", i18n.M.InputCopied, len([]rune(text))))
+			return m, tea.Batch(copyToClipboard(text), finalize(m, nil))
 		case "ctrl+y", "super+y", "meta+y":
 			m.toggleYoloMode()
 			return m, nil
@@ -1609,6 +1671,37 @@ func (m chatTUI) hideComposer() bool {
 		return true
 	}
 	return m.chooser != nil && !m.chooser.typing
+}
+
+// frameWidth is the width View() uses for the bottom region's blocks.
+func (m chatTUI) frameWidth() int {
+	if m.width >= 10 {
+		return m.width
+	}
+	return 10
+}
+
+// workingLine renders the spinning "thinking…" indicator shown above the
+// composer while a turn runs; empty when idle.
+func (m chatTUI) workingLine() string {
+	if m.state != tuiRunning {
+		return ""
+	}
+	if m.retryAttempt > 0 {
+		return fmt.Sprintf("  "+i18n.M.ChatStatusRetryingFmt, m.spinner.View(), m.retryAttempt, m.retryMax)
+	}
+	working := fmt.Sprintf("  "+i18n.M.ChatStatusThinkingFmt, m.spinner.View(), m.elapsed)
+	if m.turnTokens > 0 {
+		working += " · ↓" + shortTokens(m.turnTokens)
+	}
+	if n := len(m.pendingInterject); n > 0 {
+		if n == 1 {
+			working += dim(" · ✎ feedback queued")
+		} else {
+			working += dim(fmt.Sprintf(" · ✎ %d queued", n))
+		}
+	}
+	return working
 }
 
 // transcriptHeight is the row budget left for the transcript viewport once the
@@ -2262,10 +2355,7 @@ var (
 )
 
 func (m chatTUI) View() tea.View {
-	boxW := m.width
-	if boxW < 10 {
-		boxW = 10
-	}
+	boxW := m.frameWidth()
 	hideComposer := m.hideComposer()
 	shellMode := strings.HasPrefix(strings.TrimSpace(m.input.Value()), "!")
 	var box string
@@ -2274,7 +2364,7 @@ func (m chatTUI) View() tea.View {
 		if shellMode {
 			style = style.BorderForeground(lipgloss.Color(statusShellColor.hex))
 		}
-		box = style.Render(m.input.View())
+		box = style.Render(m.renderInputView())
 	}
 
 	var modeTag string
@@ -2339,24 +2429,6 @@ func (m chatTUI) View() tea.View {
 	// The spinning "thinking…" indicator is its own line ABOVE the input box (shown
 	// only while a turn runs); the status/data rows stay below. This mirrors Claude
 	// Code: live progress over the composer, shortcuts + stats under it.
-	var working string
-	if m.state == tuiRunning {
-		if m.retryAttempt > 0 {
-			working = fmt.Sprintf("  "+i18n.M.ChatStatusRetryingFmt, m.spinner.View(), m.retryAttempt, m.retryMax)
-		} else {
-			working = fmt.Sprintf("  "+i18n.M.ChatStatusThinkingFmt, m.spinner.View(), m.elapsed)
-			if m.turnTokens > 0 {
-				working += " · ↓" + shortTokens(m.turnTokens)
-			}
-			if n := len(m.pendingInterject); n > 0 {
-				if n == 1 {
-					working += dim(" · ✎ feedback queued")
-				} else {
-					working += dim(fmt.Sprintf(" · ✎ %d queued", n))
-				}
-			}
-		}
-	}
 	// Second status row: the live data (model, git, effort, context gauge, cache
 	// rates, jobs, balance). It lives on its own row so it's always visible; if it
 	// exceeds the terminal width it wraps to additional rows instead of being
@@ -2389,65 +2461,14 @@ func (m chatTUI) View() tea.View {
 
 	// Bottom region pinned under the transcript viewport: optional panels, the
 	// composer when visible, then the two status rows. Its height feeds
-	// transcriptHeight so the viewport above fills exactly the rest of the screen.
-	var parts []string
-	rowsAboveBox := 0 // terminal rows occupied by panels/working line before the composer
-	if todo := m.renderTodoPanel(); todo != "" {
-		parts = append(parts, todo)
-		rowsAboveBox += strings.Count(todo, "\n") + 1
-	}
-	if banner := m.renderApprovalBanner(); banner != "" {
-		parts = append(parts, banner)
-		rowsAboveBox += strings.Count(banner, "\n") + 1
-	}
-	if card := m.renderChooser(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderRewind(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderMCPImport(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderResumePicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if card := m.renderCopyPicker(); card != "" {
-		parts = append(parts, card)
-		rowsAboveBox += strings.Count(card, "\n") + 1
-	}
-	if menu := m.renderCompletion(); menu != "" {
-		parts = append(parts, menu)
-		rowsAboveBox += strings.Count(menu, "\n") + 1
-	}
-	if m.nativeScrollback {
-		if card := m.renderMainManager(); card != "" {
-			parts = append(parts, card)
-			rowsAboveBox += strings.Count(card, "\n") + 1
-		}
-	}
-	// Layout: the working spinner (when running), then the composer when visible,
-	// then the two status rows (line 1 = mode + run config + worktree identity, line 2 = live run data).
-	// Each row is wrapped to width so long content flows onto additional rows
-	// instead of being truncated. Padding to full width prevents stale cells.
-	if working != "" {
-		parts = append(parts, workingStyle.Width(boxW).MaxWidth(boxW).Render(wrapStatusLine(working, boxW)))
-		rowsAboveBox++
-	}
-	if footer := m.renderMainManagerFooter(); footer != "" {
-		parts = append(parts, footer)
-		rowsAboveBox += strings.Count(footer, "\n") + 1
-	}
+	// transcriptHeight so the viewport above fills exactly the rest of the
+	// screen. The pre-composer blocks (panels, spinner, footer, queue
+	// indicator) come from bottomPartsAboveBox — the single row-count source
+	// shared with composer mouse hit-testing.
+	parts := m.bottomPartsAboveBox(boxW)
+	rowsAboveBox := sumLines(parts) // rows occupied before the composer box
 	statusBlock := wrapStatusLine(status, boxW) + "\n" + wrapStatusLine(dataLine, boxW)
 	if !hideComposer {
-		if qi := m.renderQueueIndicator(); qi != "" {
-			parts = append(parts, qi)
-			rowsAboveBox += strings.Count(qi, "\n") + 1
-		}
 		parts = append(parts, box)
 	}
 	parts = append(parts, statusBlockStyle.Width(boxW).MaxWidth(boxW).Render(statusBlock))
@@ -4333,7 +4354,7 @@ func renderTUIBanner(label, missing string, width int) string {
 	var b strings.Builder
 	b.WriteString(accent("◆") + " " + bold("reasonix") + "  " + dim("· "+label) + "\n")
 	b.WriteString(dim("  "+i18n.M.ChatTip) + "\n")
-	b.WriteString(dim("  tip: Ctrl+C copies selection · Ctrl+Shift+M toggles mouse capture") + "\n")
+	b.WriteString(dim("  tip: Ctrl+C copies selection · Ctrl+X copies the input · Ctrl+Shift+M toggles mouse capture") + "\n")
 	if missing != "" {
 		b.WriteString(wrapForViewport("  ! "+missing, width, activeCLITheme.warn) + "\n")
 	}

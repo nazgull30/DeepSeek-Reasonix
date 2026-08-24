@@ -2,7 +2,77 @@ package cli
 
 import (
 	"testing"
+	"unicode/utf8"
 )
+
+func TestAppendSearchTextCyrillic(t *testing.T) {
+	q, added, carry := appendSearchText("", []byte("привет"))
+	if !added || q != "привет" || carry != nil {
+		t.Fatalf("got %q added=%v carry=%v", q, added, carry)
+	}
+}
+
+func TestAppendSearchTextSplitRune(t *testing.T) {
+	full := []byte("п")
+	q, added, carry := appendSearchText("", full[:1])
+	if added || q != "" || carry == nil {
+		t.Fatalf("expected truncated rune to be carried over, got %q added=%v carry=%v", q, added, carry)
+	}
+	q, added, carry = appendSearchText(q, append(carry, full[1]))
+	if !added || q != "п" || carry != nil {
+		t.Fatalf("expected completed rune, got %q added=%v carry=%v", q, added, carry)
+	}
+}
+
+func TestAppendSearchTextDropsControlBytes(t *testing.T) {
+	q, added, carry := appendSearchText("", []byte{0x01, 0x9f, 'x', 0x03})
+	if !added || q != "x" || carry != nil {
+		t.Fatalf("expected control and invalid bytes dropped and 'x' kept, got %q added=%v", q, added)
+	}
+}
+
+func TestIncompleteUTF8(t *testing.T) {
+	tests := []struct {
+		in   []byte
+		want bool
+	}{
+		{[]byte{0xd0}, true}, // truncated 2-byte lead ("п" missing its tail)
+		{[]byte{0xd0, 0xbf}, false},
+		{[]byte{0xe4, 0xb8}, true}, // truncated 3-byte sequence
+		{[]byte{0xf0, 0x9f}, true}, // truncated 4-byte sequence (emoji)
+		{[]byte{'a'}, false},
+		{[]byte{0x80}, false},       // stray continuation byte
+		{[]byte{0xd0, 0x1b}, false}, // bad continuation byte
+		{nil, false},
+	}
+	for _, tc := range tests {
+		if got := incompleteUTF8(tc.in); got != tc.want {
+			t.Errorf("incompleteUTF8(% x) = %v, want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTrimLastRune(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"прив", "при"},
+		{"aб", "a"},
+		{"👍", ""},
+		{"a", ""},
+		{"", ""},
+	}
+	for _, tc := range tests {
+		got := trimLastRune(tc.in)
+		if got != tc.want {
+			t.Errorf("trimLastRune(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("trimLastRune(%q) produced invalid UTF-8: %q", tc.in, got)
+		}
+	}
+}
 
 func TestFrameLines(t *testing.T) {
 	tests := []struct {

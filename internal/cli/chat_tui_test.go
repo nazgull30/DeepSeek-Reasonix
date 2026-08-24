@@ -2021,6 +2021,58 @@ func TestCtrlCCopySelection(t *testing.T) {
 	}
 }
 
+// TestCtrlXCopiesComposer verifies that Ctrl+X copies the whole composer draft
+// to the clipboard without clearing it, so the user can keep editing.
+func TestCtrlXCopiesComposer(t *testing.T) {
+	var copied string
+	clipboardWrite = func(text string) error { copied = text; return nil }
+	defer func() { clipboardWrite = clipboard.Write }()
+
+	m := newTestChatTUI()
+	m.input.SetValue("привет мир")
+	ctrlX := tea.KeyPressMsg{Code: 'x', Mod: 4}
+
+	out, cmd := m.Update(ctrlX)
+	m2, ok := out.(chatTUI)
+	if !ok {
+		t.Fatalf("Update returned %T, want chatTUI", out)
+	}
+
+	// Copy must be non-destructive.
+	if got := m2.input.Value(); got != "привет мир" {
+		t.Errorf("composer changed after copy: %q", got)
+	}
+
+	if cmd == nil {
+		t.Fatal("Ctrl+X with text should return a clipboard cmd")
+	}
+	cmd()
+	if copied != "привет мир" {
+		t.Errorf("clipboard should contain %q, got %q", "привет мир", copied)
+	}
+}
+
+// TestCtrlXEmptyComposerNoop verifies that Ctrl+X on an empty composer does not
+// touch the clipboard and leaves the model in a sane state.
+func TestCtrlXEmptyComposerNoop(t *testing.T) {
+	called := false
+	clipboardWrite = func(string) error { called = true; return nil }
+	defer func() { clipboardWrite = clipboard.Write }()
+
+	m := newTestChatTUI()
+	out, _ := m.Update(tea.KeyPressMsg{Code: 'x', Mod: 4})
+	m2, ok := out.(chatTUI)
+	if !ok {
+		t.Fatalf("Update returned %T, want chatTUI", out)
+	}
+	if called {
+		t.Error("empty composer must not trigger a clipboard write")
+	}
+	if m2.input.Value() != "" {
+		t.Errorf("composer unexpectedly changed: %q", m2.input.Value())
+	}
+}
+
 // TestAgentEventCoalescesBurst proves one update drains the buffered event burst
 // behind the delivered event, so a flood collapses into a single re-render.
 func TestAgentEventCoalescesBurst(t *testing.T) {
