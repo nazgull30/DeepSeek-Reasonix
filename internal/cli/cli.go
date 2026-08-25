@@ -296,6 +296,14 @@ func wireOrchestrator(ctx context.Context, cfg *config.Config, ctrl *control.Con
 		fmt.Fprintln(os.Stderr, "orchestrator: load sessions:", err)
 	}
 
+	// Emit child agent context-window summary so the user sees persisted session
+	// consumption on startup (both headless and TUI paths).
+	if summary := orc.ContextSummary(); summary != "" {
+		for _, line := range strings.Split(strings.TrimRight(summary, "\n"), "\n") {
+			sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: line})
+		}
+	}
+
 	for _, t := range orchestrator.OrchestratorTools(orc) {
 		ctrl.Registry().Add(t)
 	}

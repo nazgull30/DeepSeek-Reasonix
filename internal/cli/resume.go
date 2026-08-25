@@ -68,6 +68,7 @@ func (m *chatTUI) runResumeCommand(input string) {
 	_ = m.ctrl.Snapshot()
 	m.ctrl.Resume(loaded, target.Path)
 	m.replayActiveBranch(i18n.M.ResumedTitle)
+	m.emitOrchestratorContext()
 }
 
 // showSessions renders the recent-session list with 1-based indices, timestamp,

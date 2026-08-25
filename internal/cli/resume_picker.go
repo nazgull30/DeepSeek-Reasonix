@@ -90,6 +90,7 @@ func (m chatTUI) applyResumePick() (tea.Model, tea.Cmd) {
 	_ = m.ctrl.Snapshot()
 	m.ctrl.Resume(loaded, target.Path)
 	m.replayActiveBranch(i18n.M.ResumedTitle)
+	m.emitOrchestratorContext()
 	return m, nil
 }
 

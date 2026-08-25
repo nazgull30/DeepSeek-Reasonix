@@ -170,6 +170,47 @@ func (o *Orchestrator) StatsAll() string {
 	return s
 }
 
+// ContextSummary returns a formatted multi-line string showing context window
+// usage for each managed agent. Only agents with loaded sessions (total tokens > 0)
+// or known context windows are included. Returns "" when no agents have data.
+func (o *Orchestrator) ContextSummary() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	var lines []string
+	for name, a := range o.agents {
+		usage := a.SessionUsage()
+		_, window := a.ContextSnapshot()
+		if usage.TotalTokens == 0 && window == 0 {
+			continue
+		}
+		status := string(a.Status())
+		cost := ""
+		if usage.Cost > 0 {
+			cost = fmt.Sprintf(" · %s%.4f", usage.Currency, usage.Cost)
+		}
+		if window > 0 {
+			lines = append(lines, fmt.Sprintf("  %s [%s]: %d tokens (in %d · out %d) · window %d%s",
+				name, status, usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, window, cost))
+		} else {
+			lines = append(lines, fmt.Sprintf("  %s [%s]: %d tokens (in %d · out %d)%s",
+				name, status, usage.TotalTokens, usage.PromptTokens, usage.CompletionTokens, cost))
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "child agents:\n" + joinLines(lines)
+}
+
+func joinLines(lines []string) string {
+	s := ""
+	for _, l := range lines {
+		s += l + "\n"
+	}
+	return s
+}
+
 func (o *Orchestrator) SendMessage(ctx context.Context, to, message string) (string, error) {
 	a, ok := o.Agent(to)
 	if !ok {

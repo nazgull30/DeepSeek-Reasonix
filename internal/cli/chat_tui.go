@@ -3859,6 +3859,40 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			a.Ctrl.SetSessionPath(filepath.Join(dir, "orchestrator_"+name+".jsonl"))
 		}
 		m.notice(fmt.Sprintf("%s cleared (previous session moved to trash)", name))
+	case "/agent_clear_all":
+		m.echoLocalCommand(input)
+		if m.orc == nil {
+			m.notice("no orchestrator configured")
+			break
+		}
+		names := m.orc.AgentNames()
+		if len(names) == 0 {
+			m.notice("no managed agents configured")
+			break
+		}
+		var cleared []string
+		for _, name := range names {
+			a, ok := m.orc.Agent(name)
+			if !ok {
+				continue
+			}
+			oldPath := a.Ctrl.SessionPath()
+			if err := a.Ctrl.NewSession(); err != nil {
+				m.notice(fmt.Sprintf("agent_clear_all: %s: %v", name, err))
+				continue
+			}
+			if oldPath != "" {
+				_ = agent.TrashSessionFiles(filepath.Dir(oldPath), oldPath)
+			}
+			dir := m.orc.SessionDir()
+			if dir != "" {
+				a.Ctrl.SetSessionPath(filepath.Join(dir, "orchestrator_"+name+".jsonl"))
+			}
+			cleared = append(cleared, name)
+		}
+		if len(cleared) > 0 {
+			m.notice(fmt.Sprintf("cleared %d agent(s): %s", len(cleared), strings.Join(cleared, ", ")))
+		}
 	case "/agent_spawn":
 		m.echoLocalCommand(input)
 		if m.orc == nil {
@@ -4274,6 +4308,22 @@ func (m *chatTUI) showMCPStatus() {
 // notice queues a dim informational line to scrollback.
 func (m *chatTUI) notice(note string) {
 	m.commitLine(dim("  · " + note))
+}
+
+// emitOrchestratorContext shows child agent context-window usage as notices in
+// the scrollback. Called on session start, resume, and clear so the user sees
+// persisted agent consumption at each context switch.
+func (m *chatTUI) emitOrchestratorContext() {
+	if m.orc == nil {
+		return
+	}
+	summary := m.orc.ContextSummary()
+	if summary == "" {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimRight(summary, "\n"), "\n") {
+		m.notice(dim(strings.TrimLeft(line, " ")))
+	}
 }
 
 // commitAgentResult renders and commits a child agent's response as a

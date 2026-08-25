@@ -42,6 +42,7 @@ func (m chatTUI) confirmClearContext() (tea.Model, tea.Cmd) {
 	}
 	m.resetFreshContextView(true)
 	m.notice(i18n.M.SlashClearDone)
+	m.emitOrchestratorContext()
 	return m, tea.ClearScreen
 }
 
