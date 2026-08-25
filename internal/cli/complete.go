@@ -115,6 +115,7 @@ func (m *chatTUI) slashItems() []compItem {
 			compItem{label: "/agent_status", insert: "/agent_status", hint: "show agent statuses"},
 			compItem{label: "/agent_stats", insert: "/agent_stats", hint: "show per-agent token/cost stats"},
 			compItem{label: "/agent_clear", insert: "/agent_clear ", hint: "clear a managed agent's session"},
+			compItem{label: "/agent_clear_all", insert: "/agent_clear_all", hint: "clear all managed agents' sessions"},
 		)
 	}
 	for _, p := range m.prompts() {

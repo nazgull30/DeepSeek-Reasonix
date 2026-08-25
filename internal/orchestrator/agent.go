@@ -106,6 +106,10 @@ func (a *ManagedAgent) TurnCount() int {
 	return a.Ctrl.Turn()
 }
 
+func (a *ManagedAgent) ContextSnapshot() (int, int) {
+	return a.Ctrl.ContextSnapshot()
+}
+
 func (a *ManagedAgent) Run(ctx context.Context, task string) (string, error) {
 	a.setStatus(StatusRunning)
 	a.setLastTask(task)
