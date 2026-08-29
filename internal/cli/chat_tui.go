@@ -3848,11 +3848,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
 			break
 		}
-		if oldPath != "" {
-			if err := agent.TrashSessionFiles(filepath.Dir(oldPath), oldPath); err != nil {
-				m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
-				break
-			}
+		if err := trashOrchestratorSession(oldPath); err != nil {
+			m.notice(fmt.Sprintf("agent_clear: %s: %v", name, err))
+			break
 		}
 		dir := m.orc.SessionDir()
 		if dir != "" {
@@ -3881,8 +3879,9 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 				m.notice(fmt.Sprintf("agent_clear_all: %s: %v", name, err))
 				continue
 			}
-			if oldPath != "" {
-				_ = agent.TrashSessionFiles(filepath.Dir(oldPath), oldPath)
+			if err := trashOrchestratorSession(oldPath); err != nil {
+				m.notice(fmt.Sprintf("agent_clear_all: %s: %v", name, err))
+				continue
 			}
 			dir := m.orc.SessionDir()
 			if dir != "" {
@@ -4324,6 +4323,33 @@ func (m *chatTUI) emitOrchestratorContext() {
 	for _, line := range strings.Split(strings.TrimRight(summary, "\n"), "\n") {
 		m.notice(dim(strings.TrimLeft(line, " ")))
 	}
+}
+
+// trashOrchestratorSession moves a cleared child agent's transcript (and its
+// sidecars) to the session-dir trash so restart/reload does not resume the old
+// conversation. Orchestrator transcripts live at the fixed per-agent filename
+// orchestrator_<name>.jsonl, so the trash key is stable across clears. To keep
+// repeated clears effective, any stale trash item for that fixed key is purged
+// before the current transcript is moved — otherwise TrashSessionFiles would
+// reject with "session already exists in trash" and the old session would
+// survive a reload.
+func trashOrchestratorSession(sessionPath string) error {
+	if sessionPath == "" {
+		return nil
+	}
+	_, key, err := agent.ValidateSessionPath(filepath.Dir(sessionPath), sessionPath)
+	if err != nil {
+		return err
+	}
+	itemDir := filepath.Join(agent.SessionTrashPath(filepath.Dir(sessionPath)), key)
+	if _, err := os.Stat(itemDir); err == nil {
+		if err := os.RemoveAll(itemDir); err != nil {
+			return fmt.Errorf("purge stale trash item %s: %w", key, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return agent.TrashSessionFiles(filepath.Dir(sessionPath), sessionPath)
 }
 
 // commitAgentResult renders and commits a child agent's response as a

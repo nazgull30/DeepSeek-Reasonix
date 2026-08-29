@@ -228,3 +228,47 @@ model = "test-model"
 		t.Fatalf("child bash ran in %q, want workspace root %q", gotDir, wantDir)
 	}
 }
+
+// TestTrashOrchestratorSessionSucceedsAcrossRepeatedClears guards against the
+// fixed orchestrator filename (orchestrator_<name>.jsonl) colliding with its
+// own trash key: the first clear moves the transcript to .trash/<key>, and a
+// later clear of the same agent must still move the current transcript instead
+// of failing with "session already exists in trash" (which previously left the
+// old conversation intact and resurrected it on restart).
+func TestTrashOrchestratorSessionSucceedsAcrossRepeatedClears(t *testing.T) {
+	dir := t.TempDir()
+	name := "worker"
+	path := filepath.Join(dir, "orchestrator_"+name+".jsonl")
+
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// First clear must succeed and remove the live transcript.
+	write(`{"role":"user","content":"first"}`)
+	if err := trashOrchestratorSession(path); err != nil {
+		t.Fatalf("first clear: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("transcript should be gone from live dir after first clear")
+	}
+
+	// A second clear of the same agent (new transcript at the same fixed path)
+	// must also succeed and remove the live transcript.
+	write(`{"role":"user","content":"second"}`)
+	if err := trashOrchestratorSession(path); err != nil {
+		t.Fatalf("second clear: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("transcript should be gone from live dir after second clear")
+	}
+}
+
+func TestTrashOrchestratorSessionEmptyPath(t *testing.T) {
+	if err := trashOrchestratorSession(""); err != nil {
+		t.Fatalf("empty path should be a no-op, got %v", err)
+	}
+}
