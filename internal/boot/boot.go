@@ -127,6 +127,15 @@ type Options struct {
 	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
 	// install_source, and task behind connect_tool_source.
 	TokenMode string
+	// SkillAllowlist, when non-empty, restricts this controller's skill index to
+	// only the named skills (in addition to global [skills].disabled_skills).
+	// Used to give an orchestrator child agent a minimal, specific skill set.
+	// An empty list keeps all enabled skills.
+	SkillAllowlist []string
+	// SkillDenylist removes named skills from this controller's index in addition
+	// to the global [skills].disabled_skills. Used by orchestrator child agents
+	// (skip_skills) and the main agent (orchestrator.main_skip_skills).
+	SkillDenylist []string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
 	SessionDir string
@@ -272,15 +281,29 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// one-liner index into the same cache-stable prefix — names + descriptions
 	// only; bodies load on demand via run_skill or "/<name>". Bodies never enter
 	// the prefix, so the index costs a fixed, small amount per turn.
+	//
+	// Skill filtering is scoped per controller: the global [skills].disabled_skills
+	// always applies; the main agent additionally drops orchestrator.main_skip_skills,
+	// and orchestrator child agents apply their own skills allowlist / skip_skills.
+	disabledSkills := cfg.DisabledSkillNames()
+	if len(opts.SkillDenylist) > 0 {
+		disabledSkills = append(disabledSkills, opts.SkillDenylist...)
+	} else if opts.AgentName == "" && len(cfg.OrchestratorMainSkipSkills()) > 0 {
+		disabledSkills = append(disabledSkills, cfg.OrchestratorMainSkipSkills()...)
+	}
 	skillStore := skill.New(skill.Options{
 		ProjectRoot:   root,
 		CustomPaths:   cfg.SkillCustomPaths(),
 		ExcludedPaths: cfg.SkillExcludedPaths(),
-		DisabledNames: cfg.DisabledSkillNames(),
+		DisabledNames: disabledSkills,
+		AllowNames:    opts.SkillAllowlist,
 		MaxDepth:      cfg.SkillMaxDepth(),
 		Stderr:        opts.Stderr,
 	})
 	skills := skillStore.List()
+	// AllSkills is the unfiltered management view (used by the skills panel and
+	// re-enable flows), so it deliberately skips the runtime disabled/allowlist
+	// filters — disabled skills must stay visible for management.
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
 	// Skills index is no longer folded into the system prompt. It is injected as

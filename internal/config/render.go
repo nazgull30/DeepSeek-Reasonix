@@ -360,6 +360,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("# disabled_skills = [\"review\"]   # hide noisy or unwanted skills\n\n")
 	}
 
+	if len(c.OrchestratorMainSkipSkills()) > 0 {
+		b.WriteString("[orchestrator]\n")
+		fmt.Fprintf(&b, "main_skip_skills = %s   # skills hidden from the main agent only; children via skills/skip_skills\n\n", renderStringArray(c.OrchestratorMainSkipSkills()))
+	}
+
 	b.WriteString("[permissions]\n")
 	b.WriteString("# Per-call gating. mode = writer fallback when no rule matches: ask|allow|deny.\n")
 	b.WriteString("# Readers always default to allow. Precedence: deny > ask > allow > fallback.\n")

@@ -608,6 +608,43 @@ func TestDisabledSkillsAreFilteredFromListAndRead(t *testing.T) {
 	}
 }
 
+func TestAllowNamesRestrictsListAndRead(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/deploy.md", "---\ndescription: deploy\n---\nbody")
+	writeSkill(t, home, ".reasonix/skills/other.md", "---\ndescription: other\n---\nbody")
+
+	st := New(Options{HomeDir: home, AllowNames: []string{"deploy"}})
+	if _, ok := find(st.List(), "deploy"); !ok {
+		t.Fatal("allowlisted skill should be listed")
+	}
+	if _, ok := find(st.List(), "other"); ok {
+		t.Fatal("non-allowlisted file skill should NOT be listed")
+	}
+	if _, ok := find(st.List(), "explore"); ok {
+		t.Fatal("builtin skill outside the allowlist should NOT be listed")
+	}
+	if _, ok := st.Read("other"); ok {
+		t.Fatal("non-allowlisted skill should not be readable")
+	}
+	if _, ok := st.Read("deploy"); !ok {
+		t.Fatal("allowlisted skill should be readable")
+	}
+}
+
+func TestAllowNamesDisabledNamesIntersect(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/deploy.md", "---\ndescription: deploy\n---\nbody")
+	writeSkill(t, home, ".reasonix/skills/keep.md", "---\ndescription: keep\n---\nbody")
+
+	st := New(Options{HomeDir: home, AllowNames: []string{"deploy", "keep"}, DisabledNames: []string{"deploy"}})
+	if _, ok := find(st.List(), "deploy"); ok {
+		t.Fatal("skill in both allow and disabled should be hidden (disabled wins)")
+	}
+	if _, ok := find(st.List(), "keep"); !ok {
+		t.Fatal("allowlisted non-disabled skill should be listed")
+	}
+}
+
 func sameStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
