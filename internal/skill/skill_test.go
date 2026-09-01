@@ -620,14 +620,35 @@ func TestAllowNamesRestrictsListAndRead(t *testing.T) {
 	if _, ok := find(st.List(), "other"); ok {
 		t.Fatal("non-allowlisted file skill should NOT be listed")
 	}
-	if _, ok := find(st.List(), "explore"); ok {
-		t.Fatal("builtin skill outside the allowlist should NOT be listed")
+	if _, ok := find(st.List(), "explore"); !ok {
+		t.Fatal("builtin system skill should still be listed despite the allowlist")
 	}
 	if _, ok := st.Read("other"); ok {
 		t.Fatal("non-allowlisted skill should not be readable")
 	}
 	if _, ok := st.Read("deploy"); !ok {
 		t.Fatal("allowlisted skill should be readable")
+	}
+	if _, ok := st.Read("explore"); !ok {
+		t.Fatal("builtin system skill should be readable despite the allowlist")
+	}
+}
+
+// TestAllowNamesDisabledSkipsBuiltin proves skip_skills can still remove a
+// built-in system skill even though built-ins are exempt from the allowlist.
+func TestAllowNamesDisabledSkipsBuiltin(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/deploy.md", "---\ndescription: deploy\n---\nbody")
+
+	st := New(Options{HomeDir: home, AllowNames: []string{"deploy"}, DisabledNames: []string{"review", "explore"}})
+	if _, ok := find(st.List(), "review"); ok {
+		t.Fatal("builtin skill named in disabled should be hidden even with allowlist set")
+	}
+	if _, ok := find(st.List(), "explore"); ok {
+		t.Fatal("builtin skill named in disabled should be hidden even with allowlist set")
+	}
+	if _, ok := find(st.List(), "deploy"); !ok {
+		t.Fatal("allowlisted custom skill should still be listed")
 	}
 }
 

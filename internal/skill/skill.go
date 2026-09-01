@@ -251,14 +251,19 @@ func (s *Store) disabledName(name string) bool {
 	return s.disabled[config.SkillNameKey(name)]
 }
 
-// allowedName reports whether name passes the allowlist filter. A non-empty
-// allowlist hides every skill not explicitly listed; an empty allowlist allows
-// everything.
-func (s *Store) allowedName(name string) bool {
+// allowedSkill reports whether sk passes the allowlist filter. A non-empty
+// allowlist hides every CUSTOM skill not explicitly listed; built-in system
+// skills always pass (so a child with a minimal skills list still keeps
+// explore/review & co) unless removed via disabled_skills / skip_skills, which
+// are checked separately before this. An empty allowlist allows everything.
+func (s *Store) allowedSkill(sk Skill) bool {
 	if len(s.allowed) == 0 {
 		return true
 	}
-	return s.allowed[config.SkillNameKey(name)]
+	if sk.Scope == ScopeBuiltin {
+		return true
+	}
+	return s.allowed[config.SkillNameKey(sk.Name)]
 }
 
 func normalizeMaxDepth(depth int) int {
@@ -309,7 +314,7 @@ func (s *Store) List() []Skill {
 			continue
 		}
 		for _, sk := range s.discoverRoot(r) {
-			if s.disabledName(sk.Name) || !s.allowedName(sk.Name) {
+			if s.disabledName(sk.Name) || !s.allowedSkill(sk) {
 				continue
 			}
 			if _, dup := byName[sk.Name]; !dup {
@@ -319,7 +324,7 @@ func (s *Store) List() []Skill {
 	}
 	if !s.disableBuiltins {
 		for _, sk := range builtinSkills() {
-			if s.disabledName(sk.Name) || !s.allowedName(sk.Name) {
+			if s.disabledName(sk.Name) || !s.allowedSkill(sk) {
 				continue
 			}
 			if _, dup := byName[sk.Name]; !dup {
@@ -337,11 +342,13 @@ func (s *Store) List() []Skill {
 
 // Read resolves one skill by name, scanning the roots in priority order then the
 // built-ins. ok is false when no such skill exists or the file is unreadable.
+// The allowlist filter is enforced through List(), so a non-allowed custom skill
+// (or a hidden built-in via disabled_skills) is never returned here.
 func (s *Store) Read(name string) (Skill, bool) {
 	if !IsValidName(name) {
 		return Skill{}, false
 	}
-	if s.disabledName(name) || !s.allowedName(name) {
+	if s.disabledName(name) {
 		return Skill{}, false
 	}
 	for _, sk := range s.List() {

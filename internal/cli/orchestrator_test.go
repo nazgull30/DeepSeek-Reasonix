@@ -310,7 +310,7 @@ skip_skills = ["review"]
 		t.Fatalf("deployer child agent not registered; agents = %v", orc.AgentNames())
 	}
 
-	var hasDeploy, hasOther, hasBuiltin bool
+	var hasDeploy, hasOther, hasBuiltin, hasReview bool
 	for _, s := range a.Ctrl.Skills() {
 		switch s.Name {
 		case "deploy":
@@ -319,16 +319,21 @@ skip_skills = ["review"]
 			hasOther = true
 		case "explore":
 			hasBuiltin = true
+		case "review":
+			hasReview = true
 		}
 	}
 	if !hasDeploy {
 		t.Fatalf("deployer child should see allowlisted skill 'deploy'; got %v", a.Ctrl.Skills())
 	}
 	if hasOther {
-		t.Fatalf("deployer child should NOT see non-allowlisted skill 'other'; got %v", a.Ctrl.Skills())
+		t.Fatalf("deployer child should NOT see non-allowlisted custom skill 'other'; got %v", a.Ctrl.Skills())
 	}
-	if hasBuiltin {
-		t.Fatalf("deployer child should NOT see builtin skill outside allowlist; got %v", a.Ctrl.Skills())
+	if !hasBuiltin {
+		t.Fatalf("deployer child should still see builtin system skills despite the allowlist; got %v", a.Ctrl.Skills())
+	}
+	if hasReview {
+		t.Fatalf("deployer child skip_skills should remove builtin 'review'; got %v", a.Ctrl.Skills())
 	}
 
 	// The main agent (the ctrl passed to wireOrchestrator) is not rebuilt here,

@@ -61,8 +61,10 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 }
 
 // TestBuildChildAgentSkillAllowlist proves that an orchestrator child agent with
-// a skills allowlist sees ONLY those skills even when the main agent was told to
-// skip them — the two filters are independent and scoped per controller.
+// a skills allowlist sees the allowlisted CUSTOM skills plus the built-in system
+// skills, while every other custom skill is denied — even when the main agent
+// was told to skip them. The two filters are independent and scoped per
+// controller.
 func TestBuildChildAgentSkillAllowlist(t *testing.T) {
 	dir := robustTempDir(t)
 	home := robustTempDir(t)
@@ -112,10 +114,65 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 		t.Fatalf("child agent should see allowlisted skill 'deploy'; got %v", ctrl.Skills())
 	}
 	if hasOther {
-		t.Fatalf("child agent should NOT see non-allowlisted skill 'other'; got %v", ctrl.Skills())
+		t.Fatalf("child agent should NOT see non-allowlisted custom skill 'other'; got %v", ctrl.Skills())
 	}
-	if hasBuiltin {
-		t.Fatalf("child agent should NOT see builtin skills outside the allowlist; got %v", ctrl.Skills())
+	if !hasBuiltin {
+		t.Fatalf("child agent should still see builtin system skills despite the allowlist; got %v", ctrl.Skills())
+	}
+}
+
+// TestBuildChildAgentSkillAllowlistSkipBuiltin proves a built-in system skill
+// can still be removed from an allowlisted child via skip_skills.
+func TestBuildChildAgentSkillAllowlistSkipBuiltin(t *testing.T) {
+	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Chdir(dir)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+	writeFile(t, dir, ".reasonix/skills/deploy.md", "---\ndescription: deploy to prod\n---\nplaybook")
+
+	ctrl, err := Build(context.Background(), Options{
+		AgentName:      "deployer",
+		SkillAllowlist: []string{"deploy"},
+		SkillDenylist:  []string{"review"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	var hasDeploy, hasReview, hasExplore bool
+	for _, s := range ctrl.Skills() {
+		switch s.Name {
+		case "deploy":
+			hasDeploy = true
+		case "review":
+			hasReview = true
+		case "explore":
+			hasExplore = true
+		}
+	}
+	if !hasDeploy {
+		t.Fatalf("child agent should see allowlisted skill 'deploy'; got %v", ctrl.Skills())
+	}
+	if hasReview {
+		t.Fatalf("skip_skills should remove builtin 'review' from the child; got %v", ctrl.Skills())
+	}
+	if !hasExplore {
+		t.Fatalf("other builtins like 'explore' should survive the skip; got %v", ctrl.Skills())
 	}
 }
 

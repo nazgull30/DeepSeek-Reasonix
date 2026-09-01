@@ -59,7 +59,7 @@ model = "deepseek-reasoner"
 system_prompt = "You are a deploy engineer..."
 verbose = true
 tools = ["bash", "read_file", "glob", "grep"]
-skills = ["deploy"]             # allowlist: ONLY these skills (loses all others, incl. built-ins)
+skills = ["deploy"]             # allowlist: ONLY these custom skills (+ built-in system skills)
 skip_skills = ["review"]        # extra denylist on top of the allowlist / global disabled
 ```
 
@@ -68,10 +68,12 @@ Key fields per child:
 - `system_prompt` — Custom system prompt
 - `verbose` — Show full transcript in parent view (default: false)
 - `tools` — Optional tool allowlist
-- `skills` — Optional skill allowlist; when set, the child sees **only** these
-  skills (built-ins and everything else are hidden from its index)
-- `skip_skills` — Optional skill denylist; removes names in addition to the
-  global `[skills].disabled_skills`
+- `skills` — Optional allowlist of CUSTOM skills only. The child sees exactly
+  these custom skills **plus the built-in system skills** (init, explore,
+  research, review, security-review, test, install-capability). Every other
+  custom skill (project/global/custom) is denied by default.
+- `skip_skills` — Optional skill denylist; removes names (custom or built-in) in
+  addition to the global `[skills].disabled_skills`
 
 Main-agent skill scoping:
 - `[orchestrator].main_skip_skills` — removes named skills from the **main**
