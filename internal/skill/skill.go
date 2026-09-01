@@ -81,7 +81,11 @@ type Options struct {
 	CustomPaths     []string
 	ExcludedPaths   []string
 	DisabledNames   []string
-	MaxDepth        int
+	// AllowNames, when non-empty, restricts discovery to only these skill names.
+	// DisabledNames still takes precedence (a name in both is hidden). Used to
+	// give an orchestrator child agent a minimal, specific skill set.
+	AllowNames []string
+	MaxDepth   int
 	DisableBuiltins bool // suppress shipped built-ins (test-only knob)
 	// Stderr is the writer for diagnostic warnings. When nil, defaults to
 	// os.Stderr. Set to io.Discard to suppress output (e.g. during model
@@ -97,6 +101,7 @@ type Store struct {
 	customPaths     []string
 	excludedPaths   map[string]bool
 	disabled        map[string]bool
+	allowed         map[string]bool
 	maxDepth        int
 	disableBuiltins bool
 	stderr          io.Writer
@@ -147,6 +152,7 @@ func New(opts Options) *Store {
 		customPaths:     custom,
 		excludedPaths:   excluded,
 		disabled:        disabledNameSet(opts.DisabledNames),
+		allowed:         disabledNameSet(opts.AllowNames),
 		maxDepth:        normalizeMaxDepth(opts.MaxDepth),
 		disableBuiltins: opts.DisableBuiltins,
 		stderr:          stderr,
@@ -245,6 +251,21 @@ func (s *Store) disabledName(name string) bool {
 	return s.disabled[config.SkillNameKey(name)]
 }
 
+// allowedSkill reports whether sk passes the allowlist filter. A non-empty
+// allowlist hides every CUSTOM skill not explicitly listed; built-in system
+// skills always pass (so a child with a minimal skills list still keeps
+// explore/review & co) unless removed via disabled_skills / skip_skills, which
+// are checked separately before this. An empty allowlist allows everything.
+func (s *Store) allowedSkill(sk Skill) bool {
+	if len(s.allowed) == 0 {
+		return true
+	}
+	if sk.Scope == ScopeBuiltin {
+		return true
+	}
+	return s.allowed[config.SkillNameKey(sk.Name)]
+}
+
 func normalizeMaxDepth(depth int) int {
 	const (
 		defaultDepth = 3
@@ -293,7 +314,7 @@ func (s *Store) List() []Skill {
 			continue
 		}
 		for _, sk := range s.discoverRoot(r) {
-			if s.disabledName(sk.Name) {
+			if s.disabledName(sk.Name) || !s.allowedSkill(sk) {
 				continue
 			}
 			if _, dup := byName[sk.Name]; !dup {
@@ -303,7 +324,7 @@ func (s *Store) List() []Skill {
 	}
 	if !s.disableBuiltins {
 		for _, sk := range builtinSkills() {
-			if s.disabledName(sk.Name) {
+			if s.disabledName(sk.Name) || !s.allowedSkill(sk) {
 				continue
 			}
 			if _, dup := byName[sk.Name]; !dup {
@@ -321,6 +342,8 @@ func (s *Store) List() []Skill {
 
 // Read resolves one skill by name, scanning the roots in priority order then the
 // built-ins. ok is false when no such skill exists or the file is unreadable.
+// The allowlist filter is enforced through List(), so a non-allowed custom skill
+// (or a hidden built-in via disabled_skills) is never returned here.
 func (s *Store) Read(name string) (Skill, bool) {
 	if !IsValidName(name) {
 		return Skill{}, false

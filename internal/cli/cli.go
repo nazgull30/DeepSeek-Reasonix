@@ -282,6 +282,8 @@ func wireOrchestrator(ctx context.Context, cfg *config.Config, ctrl *control.Con
 			SystemPrompt:         entryPrompt,
 			ToolDenylist:         denylist,
 			ToolAllowlist:        entry.Tools,
+			SkillAllowlist:       entry.SkillAllowlist(),
+			SkillDenylist:        entry.SkillDenylist(),
 			InheritProjectMemory: entry.InheritProjectMemory,
 			WorkspaceRoot:        workspaceRoot,
 		})

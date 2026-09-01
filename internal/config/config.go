@@ -677,12 +677,12 @@ func (c *Config) SkillMaxDepth() int {
 	return c.Skills.MaxDepth
 }
 
-// DisabledSkillNames returns valid disabled skill identifiers, preserving the
-// first spelling and dropping duplicates/empty entries.
-func (c *Config) DisabledSkillNames() []string {
+// validSkillNames returns valid skill identifiers, preserving the first spelling
+// and dropping duplicates/empty entries.
+func validSkillNames(names []string) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, name := range c.Skills.DisabledSkills {
+	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if !IsValidSkillName(name) {
 			continue
@@ -695,6 +695,12 @@ func (c *Config) DisabledSkillNames() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// DisabledSkillNames returns valid disabled skill identifiers, preserving the
+// first spelling and dropping duplicates/empty entries.
+func (c *Config) DisabledSkillNames() []string {
+	return validSkillNames(c.Skills.DisabledSkills)
 }
 
 // IsSkillDisabled reports whether name is configured as disabled.
@@ -715,6 +721,26 @@ func (c *Config) IsSkillDisabled(name string) bool {
 // spawns an independent controller with its own model, tool registry, and session.
 type OrchestratorConfig struct {
 	Agents []OrchestratorAgentEntry `toml:"agents"`
+	// MainSkipSkills lists skill names hidden from the top-level (main) agent
+	// only. Children configured under [[orchestrator.agents]] can still expose
+	// them via their own `skills` allowlist. Global [skills].disabled_skills
+	// still applies to everyone.
+	MainSkipSkills []string `toml:"main_skip_skills"`
+}
+
+// OrchestratorMainSkipSkills returns the validated main-agent skill skip list.
+func (c *Config) OrchestratorMainSkipSkills() []string {
+	return validSkillNames(c.Orchestrator.MainSkipSkills)
+}
+
+// SkillAllowlist returns the validated per-agent skill allowlist (empty = all).
+func (e *OrchestratorAgentEntry) SkillAllowlist() []string {
+	return validSkillNames(e.Skills)
+}
+
+// SkillDenylist returns the validated per-agent skill skip list (empty = none).
+func (e *OrchestratorAgentEntry) SkillDenylist() []string {
+	return validSkillNames(e.SkipSkills)
 }
 
 // OrchestratorAgentEntry defines one managed agent in the orchestrator team.

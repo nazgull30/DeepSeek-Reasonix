@@ -272,3 +272,71 @@ func TestTrashOrchestratorSessionEmptyPath(t *testing.T) {
 		t.Fatalf("empty path should be a no-op, got %v", err)
 	}
 }
+
+func TestWireOrchestratorChildSkillsAllowlist(t *testing.T) {
+	dir := writeOrchestratorProject(t, `
+[orchestrator]
+main_skip_skills = ["deploy"]
+
+[[orchestrator.agents]]
+name = "deployer"
+model = "test-model"
+skills = ["deploy"]
+skip_skills = ["review"]
+`)
+	if err := os.MkdirAll(filepath.Join(dir, ".reasonix", "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".reasonix", "skills", "deploy.md"), []byte("---\ndescription: deploy to prod\n---\nplaybook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".reasonix", "skills", "other.md"), []byte("---\ndescription: a normal skill\n---\nplaybook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	ctrl := control.New(control.Options{Sink: event.Discard, Registry: tool.NewRegistry()})
+	defer ctrl.Close()
+
+	orc := wireOrchestrator(context.Background(), cfg, ctrl, event.Discard, 0, "", resolveCLISessionDir())
+	if orc == nil {
+		t.Fatal("wireOrchestrator returned nil with a configured agent")
+	}
+	a, ok := orc.Agent("deployer")
+	if !ok {
+		t.Fatalf("deployer child agent not registered; agents = %v", orc.AgentNames())
+	}
+
+	var hasDeploy, hasOther, hasBuiltin, hasReview bool
+	for _, s := range a.Ctrl.Skills() {
+		switch s.Name {
+		case "deploy":
+			hasDeploy = true
+		case "other":
+			hasOther = true
+		case "explore":
+			hasBuiltin = true
+		case "review":
+			hasReview = true
+		}
+	}
+	if !hasDeploy {
+		t.Fatalf("deployer child should see allowlisted skill 'deploy'; got %v", a.Ctrl.Skills())
+	}
+	if hasOther {
+		t.Fatalf("deployer child should NOT see non-allowlisted custom skill 'other'; got %v", a.Ctrl.Skills())
+	}
+	if !hasBuiltin {
+		t.Fatalf("deployer child should still see builtin system skills despite the allowlist; got %v", a.Ctrl.Skills())
+	}
+	if hasReview {
+		t.Fatalf("deployer child skip_skills should remove builtin 'review'; got %v", a.Ctrl.Skills())
+	}
+
+	// The main agent (the ctrl passed to wireOrchestrator) is not rebuilt here,
+	// so main_skip_skills cannot be asserted on ctrl. Its behavior is already
+	// proven at the boot layer (TestBuildMainAgentSkipsOrchestratorMainSkipSkills).
+}

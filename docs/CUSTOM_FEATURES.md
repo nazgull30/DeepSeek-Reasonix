@@ -50,13 +50,17 @@ All commands support tab-completion (`/agent_<TAB>`) and help text:
 ### Configuration (`reasonix.toml`)
 
 ```toml
-[agent]
-  [agent.orchestrator.children]
-    [agent.orchestrator.children.architect]
-      model = "deepseek-reasoner"
-      system_prompt = "You are a solution architect..."
-      verbose = true
-      tools = ["bash", "read_file", "glob", "grep"]
+[orchestrator]
+main_skip_skills = ["deploy"]   # skills hidden from the MAIN agent only
+
+[[orchestrator.agents]]
+name = "deployer"
+model = "deepseek-reasoner"
+system_prompt = "You are a deploy engineer..."
+verbose = true
+tools = ["bash", "read_file", "glob", "grep"]
+skills = ["deploy"]             # allowlist: ONLY these custom skills (+ built-in system skills)
+skip_skills = ["review"]        # extra denylist on top of the allowlist / global disabled
 ```
 
 Key fields per child:
@@ -64,6 +68,20 @@ Key fields per child:
 - `system_prompt` — Custom system prompt
 - `verbose` — Show full transcript in parent view (default: false)
 - `tools` — Optional tool allowlist
+- `skills` — Optional allowlist of CUSTOM skills only. The child sees exactly
+  these custom skills **plus the built-in system skills** (init, explore,
+  research, review, security-review, test, install-capability). Every other
+  custom skill (project/global/custom) is denied by default.
+- `skip_skills` — Optional skill denylist; removes names (custom or built-in) in
+  addition to the global `[skills].disabled_skills`
+
+Main-agent skill scoping:
+- `[orchestrator].main_skip_skills` — removes named skills from the **main**
+  agent's index only. Children can still be given those skills via their own
+  `skills` allowlist, so the main context pays no tokens for agent-only skills.
+- These filters are per controller: the child's index is scoped by its
+  `skills`/`skip_skills`, the main agent's by `main_skip_skills` + the global
+  `[skills].disabled_skills` (which still applies to everyone).
 
 ### Automatic Session Persistence
 
