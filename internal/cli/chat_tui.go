@@ -404,6 +404,19 @@ type subtaskMsg struct {
 	err    error
 }
 
+// parseSubtaskKeyedValue extracts the value of a key=value /subtask option
+// (e.g. continue_from=sa_...) that appears as a space-delimited prefix. It
+// returns the remaining text after the value plus the value itself (trimmed).
+func parseSubtaskKeyedValue(rest string) (rem, val string) {
+	rest = strings.TrimSpace(rest)
+	for i, r := range rest {
+		if r == ' ' || r == '\t' || r == '\n' {
+			return strings.TrimSpace(rest[i:]), strings.TrimSpace(rest[:i])
+		}
+	}
+	return "", strings.TrimSpace(rest)
+}
+
 // runStatusline runs the user's custom status-line command off the event loop,
 // feeding it a small JSON context on stdin and returning its first stdout line.
 // A no-op (nil) when no command is configured. Tight timeout so a slow script
@@ -3973,25 +3986,55 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		}
 		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
 		inherit := false
+		inheritSet := false
+		continueFrom := ""
+		forkFrom := ""
 		if after, ok := strings.CutPrefix(rest, "true:"); ok {
 			inherit = true
+			inheritSet = true
 			rest = strings.TrimSpace(after)
 		} else if after, ok := strings.CutPrefix(rest, "false:"); ok {
+			inheritSet = true
 			rest = strings.TrimSpace(after)
+		}
+		// continue_from=/fork_from= let the user chain /subtask rounds onto a
+		// prior sub-agent's transcript (sa_... reference from a previous result),
+		// so iterative review/fix loops reuse its focused context instead of
+		// re-exploring from scratch each time.
+		if after, ok := strings.CutPrefix(rest, "continue_from="); ok {
+			rest, continueFrom = parseSubtaskKeyedValue(after)
+		}
+		if after, ok := strings.CutPrefix(rest, "fork_from="); ok {
+			rest, forkFrom = parseSubtaskKeyedValue(after)
+		}
+		if inheritSet && continueFrom != "" {
+			m.notice("true: is not compatible with continue_from")
+			break
+		}
+		if continueFrom != "" && forkFrom != "" {
+			m.notice("continue_from and fork_from are mutually exclusive")
+			break
 		}
 		desc := rest
 		if desc == "" {
-			m.notice("usage: /subtask [true:|false:] <description>")
+			m.notice("usage: /subtask [true:|false:] [continue_from=sa_...|fork_from=sa_...] <description>")
 			break
 		}
-		args, _ := json.Marshal(map[string]any{
-			"prompt":            desc,
-			"cache_from_parent": inherit,
-		})
+		args := map[string]any{
+			"prompt": desc,
+		}
+		if continueFrom != "" {
+			args["continue_from"] = continueFrom
+		} else if forkFrom != "" {
+			args["fork_from"] = forkFrom
+		} else {
+			args["cache_from_parent"] = inherit
+		}
+		argsJSON, _ := json.Marshal(args)
 		parentSession := agent.BranchID(m.ctrl.SessionPath())
 		return func() tea.Msg {
 			ctx := agent.WithParentSession(context.Background(), parentSession)
-			result, err := tt.Execute(ctx, args)
+			result, err := tt.Execute(ctx, argsJSON)
 			return subtaskMsg{desc: desc, result: result, err: err}
 		}
 	case "/agent_status":
