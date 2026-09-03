@@ -252,6 +252,15 @@ var ChineseTraditional = Messages{
 	RewindApplyHint:        "↑/↓ · Enter 套用 · Esc 返回",
 	RewindEmpty:            "(空)",
 
+	FlowTitle:           "流程 — 目前回合",
+	FlowMainAgent:       "主代理",
+	FlowEmpty:           "尚無子任務",
+	FlowHint:            "↑/↓ 捲動 · Esc / Ctrl+T 關閉",
+	FlowStatusLabel:     "流程",
+	FlowTagSubagent:     "子代理",
+	FlowTagOrchestrator: "編排代理",
+	FlowTotalAll:        "總計（所有代理）",
+
 	SelectProvidersLabel:  "選擇要啟用的 provider",
 	EnterAPIKeysHeader:    "輸入 API key（Enter 跳過、稍後再設）：",
 	MissingKeyIntro:       "reasonix.toml 已設定好 — 只差一個 API key 就可以開始。",
