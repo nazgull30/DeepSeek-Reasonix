@@ -498,3 +498,62 @@ func TestTaskCardFailureRendersErrorInBox(t *testing.T) {
 		t.Fatalf("failed task card should contain ⊘ and the error:\n%s", joined)
 	}
 }
+
+// TestSubtaskBoxRenderAndClose proves a /subtask-style card (args carrying a
+// description) renders an open box that closeTaskCard rewrites with ✓ + the
+// accumulated usage, then removes the slot.
+func TestSubtaskBoxRenderAndClose(t *testing.T) {
+	m := newTestChatTUI()
+	args := `{"prompt":"Find callers","description":"Find callers of X"}`
+
+	// Open the box the way /subtask does.
+	m.commitSpacer()
+	m.commitLine(taskCardRender(args, m.width, taskCardOpen, nil, ""))
+	slot := taskCardSlot{idx: len(m.transcript) - 1, args: args}
+	slot.usage = addUsage(nil, &provider.Usage{
+		PromptTokens: 30_000, CompletionTokens: 4_000, TotalTokens: 34_000,
+		CacheHitTokens: 25_000, CacheMissTokens: 5_000, ReasoningTokens: 1_200,
+	})
+	m.taskCards["subtask-1"] = slot
+
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "Find callers of X") {
+		t.Fatalf("open subtask box should contain the description:\n%s", joined)
+	}
+
+	// Close on success.
+	if closed := m.closeTaskCard("subtask-1", ""); closed {
+		t.Fatal("closeTaskCard with empty error should not report failure")
+	}
+	if len(m.taskCards) != 0 {
+		t.Fatalf("slot should be removed, still has %d", len(m.taskCards))
+	}
+	joined = strings.Join(m.transcript, "\n")
+	for _, want := range []string{"✓", "34.0K", "25.0K", "5.0K", "2.8K", "1.2K"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("closed subtask box missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// TestCloseTaskCardFailureAndNoop proves closeTaskCard reports failure on a
+// non-empty error (rewriting the box with ⊘) and is a no-op for unknown IDs.
+func TestCloseTaskCardFailureAndNoop(t *testing.T) {
+	m := newTestChatTUI()
+	args := `{"prompt":"Find callers","description":"Find callers of X"}`
+	m.commitLine(taskCardRender(args, m.width, taskCardOpen, nil, ""))
+	m.taskCards["subtask-1"] = taskCardSlot{idx: len(m.transcript) - 1, args: args}
+
+	if closed := m.closeTaskCard("subtask-1", "boom"); !closed {
+		t.Fatal("closeTaskCard with an error should report failure")
+	}
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "⊘") || !strings.Contains(joined, "boom") {
+		t.Fatalf("failed subtask box should contain ⊘ and the error:\n%s", joined)
+	}
+
+	// Unknown ID: no-op, returns false, transcript untouched.
+	if closed := m.closeTaskCard("nope", "x"); closed {
+		t.Fatal("closeTaskCard for unknown id should return false")
+	}
+}
