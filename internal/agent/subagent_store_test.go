@@ -435,3 +435,41 @@ func prepareCompletedSubagentForLineageTest(t *testing.T, parentSession string) 
 	run.Release()
 	return sessionDir, store, run.Ref, spec
 }
+
+func TestSubagentStorePersistsUsageMeta(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "persist-usage")
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "do the thing"})
+	run.Meta.Usage = &SessionUsageMeta{
+		PromptTokens:     12345,
+		CompletionTokens: 678,
+		CacheHitTokens:   10000,
+		CacheMissTokens:  2345,
+		ReasoningTokens:  100,
+		TotalTokens:      13023,
+		Cost:             0.0099,
+		Currency:         "$",
+	}
+	if err := store.SaveCompleted(run); err != nil {
+		t.Fatalf("SaveCompleted: %v", err)
+	}
+	run.Release()
+
+	loaded, err := store.LoadMeta(run.Ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if loaded.Usage == nil {
+		t.Fatalf("expected persisted usage, got nil")
+	}
+	if loaded.Usage.TotalTokens != 13023 || loaded.Usage.PromptTokens != 12345 {
+		t.Fatalf("persisted usage = %+v, want prompt=12345 total=13023", loaded.Usage)
+	}
+	if loaded.Usage.Cost != 0.0099 || loaded.Usage.Currency != "$" {
+		t.Fatalf("persisted usage = %+v, want cost=0.0099 currency=$", loaded.Usage)
+	}
+}

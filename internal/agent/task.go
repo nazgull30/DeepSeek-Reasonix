@@ -418,7 +418,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 					err = errors.Join(panicErr, t.transcripts.SaveFailed(run))
 				}
 			}()
-			answer, err := t.runSubSession(jobCtx, p.Prompt, subReg, nested, maxSteps, prov, pricing, ctxWin, run.Session)
+			answer, err := t.runSubSession(jobCtx, p.Prompt, subReg, nested, maxSteps, prov, pricing, ctxWin, run)
 			if err != nil {
 				return FormatSubagentResult("", run.Ref, true), errors.Join(err, t.transcripts.SaveFailed(run))
 			}
@@ -435,7 +435,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 
 	// Foreground: run synchronously, nesting events under this call.
 	defer run.Release()
-	answer, err := t.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, run.Session)
+	answer, err := t.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, run)
 	if err != nil {
 		return "", errors.Join(err, t.transcripts.SaveFailed(run))
 	}
@@ -599,7 +599,7 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 	return prov, pricing, ctxWin, nil
 }
 
-func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session) (string, error) {
+func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, run *SubagentRun) (string, error) {
 	mq, _ := memory.QueueFromContext(ctx)
 	var resultState *ContentReplacementState
 	if t.parentResultState != nil {
@@ -607,7 +607,12 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 			resultState = rs.Clone()
 		}
 	}
-	return RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
+	onUsage := func(u SessionUsageMeta) {
+		if run != nil {
+			run.Meta.Usage = &u
+		}
+	}
+	return RunSubAgentWithSession(ctx, prov, subReg, run.Session, prompt, Options{
 		MaxSteps:          maxSteps,
 		Temperature:       t.temperature,
 		Pricing:           pricing,
@@ -624,6 +629,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		ReasoningLanguage: ReasoningLanguageFromContext(ctx),
 		MemoryQueue:       mq,
 		ResultState:       resultState,
+		OnSubagentUsage:   onUsage,
 	}, sink)
 }
 
@@ -650,6 +656,9 @@ func RunSubAgentWithSession(ctx context.Context, prov provider.Provider, reg *to
 	sub := New(prov, reg, sess, opts, sink)
 	if err := sub.Run(ctx, prompt); err != nil {
 		return "", fmt.Errorf("sub-agent: %w", err)
+	}
+	if opts.OnSubagentUsage != nil {
+		opts.OnSubagentUsage(sub.SessionUsage())
 	}
 	// Walk the session backwards for the last assistant message with content —
 	// that's the sub-agent's final answer. Intermediate assistant messages with

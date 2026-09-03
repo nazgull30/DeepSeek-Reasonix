@@ -657,6 +657,11 @@ type Options struct {
 	// TimeBasedCompactRatio > 0. Defaults to 5 minutes when set to 0 with
 	// TimeBasedCompactRatio > 0.
 	CacheIdleTTL time.Duration
+
+	// OnSubagentUsage, when set, is invoked with the sub-agent's cumulative token
+	// and cost totals after its run completes. Used to persist per-sub-agent
+	// usage so it survives the session (e.g. into SubagentMeta).
+	OnSubagentUsage func(SessionUsageMeta)
 }
 
 func stringSet(ss []string) map[string]bool {

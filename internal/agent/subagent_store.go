@@ -44,6 +44,10 @@ type SubagentMeta struct {
 	ToolSchemaHash   string         `json:"toolSchemaHash"`
 	Model            string         `json:"model"`
 	Effort           string         `json:"effort"`
+	// Usage holds the sub-agent's cumulative token and cost totals for the run,
+	// captured after completion so they survive the session. nil when no turn
+	// completed or the run predates this field.
+	Usage *SessionUsageMeta `json:"usage,omitempty"`
 }
 
 // SubagentSpec describes the current invocation identity.
