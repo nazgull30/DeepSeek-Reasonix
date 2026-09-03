@@ -546,6 +546,40 @@ func TestTaskToolCarriesRecentKeepIntoSubsessions(t *testing.T) {
 	}
 }
 
+// TestCacheFromParentExplicitFalseRunsFresh verifies that an explicit
+// cache_from_parent=false overrides the auto-fork and runs a fresh isolated
+// sub-agent with no inherited parent context, even when parent messages are
+// wired — the semantics the /subtask false:/no-prefix form relies on.
+func TestCacheFromParentExplicitFalseRunsFresh(t *testing.T) {
+	parentMsgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "You are a helpful assistant."},
+		{Role: provider.RoleUser, Content: "What does the codebase do?"},
+		{Role: provider.RoleAssistant, Content: "It's a Go project for coding agents."},
+	}
+	sub := &mockProvider{name: "sub", streams: [][]provider.Chunk{
+		{{Type: provider.ChunkText, Text: "fresh result"}, {Type: provider.ChunkDone}},
+	}}
+	reg := tool.NewRegistry()
+	task := newTestTaskTool(t, sub, reg, "test-sys-prompt", "", "", nil).
+		WithParentMessages(func() []provider.Message { return parentMsgs })
+
+	out, err := task.Execute(testTaskContext(), []byte(`{"prompt":"do the thing","cache_from_parent":false}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !strings.Contains(out, "fresh result") {
+		t.Errorf("answer = %q, want 'fresh result'", out)
+	}
+	// A fresh sub-agent starts with its own system prompt, not the parent's
+	// inherited conversation — proving cache_from_parent=false skipped the fork.
+	if sys := sub.lastReq.Messages[0]; sys.Role != provider.RoleSystem || sys.Content != "test-sys-prompt" {
+		t.Errorf("first message = %+v, want fresh system 'test-sys-prompt'", sys)
+	}
+	if got := lastUser(sub.lastReq); got != "do the thing" {
+		t.Errorf("user message = %q, want the prompt verbatim", got)
+	}
+}
+
 func newTestTaskTool(t *testing.T, prov provider.Provider, reg *tool.Registry, sysPrompt, subagentModel, subagentEffort string, resolve func(string, string) (provider.Provider, *provider.Pricing, int, error)) *TaskTool {
 	t.Helper()
 	return NewTaskTool(prov, nil, reg, 20, 0, 0, 0, 0, 0, 0.0, "", sysPrompt, nil, 0, subagentModel, subagentEffort, resolve, nil).

@@ -383,6 +383,12 @@ type agentSendMsg struct {
 	err     error
 }
 
+type subtaskMsg struct {
+	desc   string
+	result string
+	err    error
+}
+
 // runStatusline runs the user's custom status-line command off the event loop,
 // feeding it a small JSON context on stdin and returning its first stdout line.
 // A no-op (nil) when no command is configured. Tight timeout so a slow script
@@ -1398,6 +1404,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(fmt.Sprintf("agent_send: %s failed: %v", msg.name, msg.err))
 		} else {
 			m.notice(fmt.Sprintf("agent_send: sent to %s", msg.name))
+			m.commitAgentResult(msg.result)
+		}
+
+	case subtaskMsg:
+		if msg.err != nil {
+			m.notice(fmt.Sprintf("subtask %q failed: %v", msg.desc, msg.err))
+		} else {
+			m.notice(fmt.Sprintf("subtask %q done", msg.desc))
 			m.commitAgentResult(msg.result)
 		}
 
@@ -3927,6 +3941,40 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		return func() tea.Msg {
 			result, err := orc.SendMessage(context.Background(), name, msg)
 			return agentSendMsg{name: name, message: msg, result: result, err: err}
+		}
+	case "/subtask":
+		m.echoLocalCommand(input)
+		tt := m.ctrl.TaskTool()
+		if tt == nil {
+			m.notice("task tool unavailable (is token economy mode active?)")
+			break
+		}
+		if m.ctrl.Running() {
+			m.notice("finish the current turn before starting a sub-task")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		inherit := false
+		if after, ok := strings.CutPrefix(rest, "true:"); ok {
+			inherit = true
+			rest = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(rest, "false:"); ok {
+			rest = strings.TrimSpace(after)
+		}
+		desc := rest
+		if desc == "" {
+			m.notice("usage: /subtask [true:|false:] <description>")
+			break
+		}
+		args, _ := json.Marshal(map[string]any{
+			"prompt":            desc,
+			"cache_from_parent": inherit,
+		})
+		parentSession := agent.BranchID(m.ctrl.SessionPath())
+		return func() tea.Msg {
+			ctx := agent.WithParentSession(context.Background(), parentSession)
+			result, err := tt.Execute(ctx, args)
+			return subtaskMsg{desc: desc, result: result, err: err}
 		}
 	case "/agent_status":
 		m.echoLocalCommand(input)

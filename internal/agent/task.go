@@ -305,7 +305,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		RunInBackground bool     `json:"run_in_background"`
 		Model           string   `json:"model"`
 		Effort          string   `json:"effort"`
-		CacheFromParent bool     `json:"cache_from_parent"`
+		CacheFromParent *bool    `json:"cache_from_parent"`
 		ContinueFrom    string   `json:"continue_from"`
 		ForkFrom        string   `json:"fork_from"`
 	}
@@ -316,7 +316,8 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return "", fmt.Errorf("prompt is required")
 	}
 
-	if p.CacheFromParent && (p.ContinueFrom != "" || p.ForkFrom != "") {
+	cacheFromParent := p.CacheFromParent != nil && *p.CacheFromParent
+	if cacheFromParent && (p.ContinueFrom != "" || p.ForkFrom != "") {
 		return "", fmt.Errorf("cache_from_parent is not compatible with continue_from or fork_from")
 	}
 
@@ -349,12 +350,15 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// When parent messages are wired (set via WithParentMessages), the subagent
 	// automatically uses cache_from_parent unless it is incompatible (recursive
 	// fork or no usable history) — in those cases it falls back to a normal
-	// session. The explicit flag overrides the auto-detection.
+	// session. An explicit cache_from_parent flag overrides the auto-detection:
+	// true forces inheritance (error when not wired), false disables it and runs
+	// a fresh isolated subagent with no parent context.
+	cacheFromParentExplicit := p.CacheFromParent != nil
 	var forkedSession *Session
 	var forkGuard bool
-	if p.CacheFromParent || (t.parentMessages != nil && p.ContinueFrom == "" && p.ForkFrom == "") {
+	if cacheFromParent || (!cacheFromParentExplicit && t.parentMessages != nil && p.ContinueFrom == "" && p.ForkFrom == "") {
 		if t.parentMessages == nil {
-			if p.CacheFromParent {
+			if cacheFromParent {
 				return "", fmt.Errorf("cache_from_parent is not available in this context (parent messages not wired)")
 			}
 		} else {
