@@ -280,6 +280,10 @@ type chatTUI struct {
 	// slashLowerCache is the parallel lowercased-label slice for slashCache, so
 	// the fuzzy filter never re-lowercases (and re-allocates) each label per key.
 	slashLowerCache []string
+	// slashFilterBuf is a scratch slice reused across keystrokes by the slash
+	// fuzzy filter, so filtering a large menu on every key doesn't allocate a
+	// fresh result slice each time (the source of input lag while typing "/").
+	slashFilterBuf []compItem
 
 	// skillPick is the interactive skill picker overlay for /skills. nil when closed.
 	skillPick *skillPicker
