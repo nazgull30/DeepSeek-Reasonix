@@ -59,7 +59,36 @@ const (
 
 // slashItems is the full set of slash commands offered for completion: the
 // built-in verbs, custom commands, skills (each as "/<name>"), and MCP prompts.
+// It is cached across keystrokes and rebuilt only when the underlying sources
+// (commands, skills, prompts, orchestrator) change via bumpSlashCompletion, so
+// typing a "/" command doesn't reconstruct and re-filter the list each key.
 func (m *chatTUI) slashItems() []compItem {
+	if m.slashCache != nil && m.slashCacheGen == m.slashBuildGen {
+		return m.slashCache
+	}
+	m.slashBuildGen = m.slashCacheGen
+	m.slashCache = m.buildSlashItems()
+	m.slashLowerCache = make([]string, len(m.slashCache))
+	for i, it := range m.slashCache {
+		m.slashLowerCache[i] = strings.ToLower(it.label)
+	}
+	return m.slashCache
+}
+
+// slashLower returns the already-lowercased labels parallel to slashItems(), so
+// the fuzzy filter can match without re-lowercasing (and allocating) per item.
+func (m *chatTUI) slashLower() []string {
+	m.slashItems()
+	return m.slashLowerCache
+}
+
+// bumpSlashCompletion invalidates the cached slash-completion item list. Call it
+// whenever commands, skills, MCP prompts, or the orchestrator are replaced.
+func (m *chatTUI) bumpSlashCompletion() {
+	m.slashCacheGen++
+}
+
+func (m *chatTUI) buildSlashItems() []compItem {
 	items := []compItem{
 		{label: "/compact", insert: "/compact ", hint: i18n.M.CmdCompact},
 		{label: "/new", insert: "/new ", hint: i18n.M.CmdNew},
@@ -147,7 +176,7 @@ func (m *chatTUI) updateCompletion() {
 		}
 		if !strings.ContainsAny(val, " \t\n") {
 			// Still naming the command itself.
-			if items := fuzzyFilterSlash(m.slashItems(), val); len(items) > 0 {
+			if items := fuzzyFilterSlash(m.slashItems(), m.slashLower(), val); len(items) > 0 {
 				m.setCompletion(compSlash, items, 0)
 				return
 			}
@@ -320,7 +349,11 @@ func (m *chatTUI) setCompletion(kind compKind, items []compItem, replaceFrom int
 // matches everything — the same behavior the old prefix filter had, since
 // every label trivially starts with "". A query that matches nothing returns
 // nil so the caller can fall through and close the menu.
-func fuzzyFilterSlash(items []compItem, query string) []compItem {
+//
+// lower must be the parallel slice of already-lowercased labels (see slashLower)
+// so items aren't re-lowercased — and re-allocated — on every keypress. It is a
+// free function so it stays trivially testable; the TUI supplies both slices.
+func fuzzyFilterSlash(items []compItem, lower []string, query string) []compItem {
 	if query == "" {
 		out := make([]compItem, len(items))
 		copy(out, items)
@@ -328,8 +361,8 @@ func fuzzyFilterSlash(items []compItem, query string) []compItem {
 	}
 	lq := strings.ToLower(query)
 	var prefix, rest []compItem
-	for _, it := range items {
-		l := strings.ToLower(it.label)
+	for i, it := range items {
+		l := lower[i]
 		switch {
 		case strings.HasPrefix(l, lq):
 			prefix = append(prefix, it)

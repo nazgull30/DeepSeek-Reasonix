@@ -270,6 +270,17 @@ type chatTUI struct {
 	// in the slash menu as "/<name>" and managed via /skills.
 	skills []skill.Skill
 
+	// slashCache memoizes the base slash-completion item list produced by
+	// slashItems(). It's rebuilt only when slashCacheGen advances — i.e. when
+	// commands, skills, MCP prompts, or the orchestrator change — so typing a
+	// "/" command doesn't reconstruct and re-filter the whole list per keystroke.
+	slashCache    []compItem
+	slashCacheGen int
+	slashBuildGen int
+	// slashLowerCache is the parallel lowercased-label slice for slashCache, so
+	// the fuzzy filter never re-lowercases (and re-allocates) each label per key.
+	slashLowerCache []string
+
 	// skillPick is the interactive skill picker overlay for /skills. nil when closed.
 	skillPick *skillPicker
 
@@ -1436,6 +1447,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.host = msg.host
 			m.modelRef = msg.ref
 			m.refreshEffortStatus()
+			m.bumpSlashCompletion()
 			// Stash the old controller for cleanup at exit. It cannot be
 			// closed here or in the build goroutine — Close() runs
 			// SessionEnd hooks and kills plugin subprocesses, both of
@@ -3576,6 +3588,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		if m.ctrl != nil {
 			m.host = m.ctrl.Host()
 		}
+		m.bumpSlashCompletion()
 		m.refreshMCPManager()
 
 	case event.TurnDone:
@@ -3785,6 +3798,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		prev := len(m.commands)
 		err := m.ctrl.ReloadCommands(context.Background())
 		m.commands = m.ctrl.Commands()
+		m.bumpSlashCompletion()
 		m.updateCompletion()
 		if err != nil {
 			m.notice("reload-cmd: " + err.Error())
