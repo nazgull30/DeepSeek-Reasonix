@@ -7,6 +7,7 @@ import (
 	"charm.land/bubbles/v2/textarea"
 
 	"reasonix/internal/event"
+	"reasonix/internal/provider"
 )
 
 // newTestChatTUI builds a chatTUI with just the pieces the streaming/commit and
@@ -38,6 +39,7 @@ func newTestChatTUI() chatTUI {
 		shellExpanded:        shellExp,
 		shellTranscriptIdx:   shellIdx,
 		toolLineCountByID:    map[string]int{},
+		taskCards:            map[string]taskCardSlot{},
 	}
 }
 
@@ -440,5 +442,118 @@ func TestReasoningViewBounded(t *testing.T) {
 	}
 	if c := strings.Count(m.transcript[m.reasoningTextIdx], "\n") + 1; c > reasoningTailLines {
 		t.Fatalf("live reasoning block kept %d lines, want <= %d", c, reasoningTailLines)
+	}
+}
+
+// TestTaskCardLifecycle proves a task tool call renders a boxed card on dispatch,
+// accumulates the sub-agent's usage (via ParentID) while open, and rewrites the
+// box in place with a ✓ status + token readout when the result lands.
+func TestTaskCardLifecycle(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"description":"Locate the tests"}`}})
+
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "Locate the tests") {
+		t.Fatalf("task dispatch should render the description in a box:\n%s", joined)
+	}
+
+	// Sub-agent usage tagged with the task's parent ID accumulates silently.
+	m.ingestEvent(event.Event{Kind: event.Usage, ParentID: "task-1", Usage: &provider.Usage{
+		PromptTokens:     30_000,
+		CompletionTokens: 4_000,
+		TotalTokens:      34_000,
+		CacheHitTokens:   25_000,
+		CacheMissTokens:  5_000,
+		ReasoningTokens:  1_200,
+	}})
+
+	// Still open: the box must not yet show a ✓.
+	joined = strings.Join(m.transcript, "\n")
+	if strings.Contains(joined, "✓") {
+		t.Fatalf("open task card should not show a status glyph:\n%s", joined)
+	}
+
+	// Closing the card rewrites the box with ✓ + tokens.
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "task-1", Name: "task"}})
+	joined = strings.Join(m.transcript, "\n")
+	for _, want := range []string{"✓", "34.0K", "25.0K", "5.0K", "2.8K", "1.2K"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("completed task card missing %q:\n%s", want, joined)
+		}
+	}
+	if len(m.taskCards) != 0 {
+		t.Fatalf("task card should be removed on completion, still has %d", len(m.taskCards))
+	}
+}
+
+// TestTaskCardFailureRendersErrorInBox proves a failed task rewrites the box
+// with a ⊘ glyph and the error message contained inside it.
+func TestTaskCardFailureRendersErrorInBox(t *testing.T) {
+	m := newTestChatTUI()
+	m.ingestEvent(event.Event{Kind: event.ToolDispatch, Tool: event.Tool{ID: "task-1", Name: "task", Args: `{"description":"Locate the tests"}`}})
+	m.ingestEvent(event.Event{Kind: event.ToolResult, Tool: event.Tool{ID: "task-1", Name: "task", Err: "timeout exceeded"}})
+
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "⊘") || !strings.Contains(joined, "timeout exceeded") {
+		t.Fatalf("failed task card should contain ⊘ and the error:\n%s", joined)
+	}
+}
+
+// TestSubtaskBoxRenderAndClose proves a /subtask-style card (args carrying a
+// description) renders an open box that closeTaskCard rewrites with ✓ + the
+// accumulated usage, then removes the slot.
+func TestSubtaskBoxRenderAndClose(t *testing.T) {
+	m := newTestChatTUI()
+	args := `{"prompt":"Find callers","description":"Find callers of X"}`
+
+	// Open the box the way /subtask does.
+	m.commitSpacer()
+	m.commitLine(taskCardRender(args, m.width, taskCardOpen, nil, ""))
+	slot := taskCardSlot{idx: len(m.transcript) - 1, args: args}
+	slot.usage = addUsage(nil, &provider.Usage{
+		PromptTokens: 30_000, CompletionTokens: 4_000, TotalTokens: 34_000,
+		CacheHitTokens: 25_000, CacheMissTokens: 5_000, ReasoningTokens: 1_200,
+	})
+	m.taskCards["subtask-1"] = slot
+
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "Find callers of X") {
+		t.Fatalf("open subtask box should contain the description:\n%s", joined)
+	}
+
+	// Close on success.
+	if closed := m.closeTaskCard("subtask-1", ""); closed {
+		t.Fatal("closeTaskCard with empty error should not report failure")
+	}
+	if len(m.taskCards) != 0 {
+		t.Fatalf("slot should be removed, still has %d", len(m.taskCards))
+	}
+	joined = strings.Join(m.transcript, "\n")
+	for _, want := range []string{"✓", "34.0K", "25.0K", "5.0K", "2.8K", "1.2K"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("closed subtask box missing %q:\n%s", want, joined)
+		}
+	}
+}
+
+// TestCloseTaskCardFailureAndNoop proves closeTaskCard reports failure on a
+// non-empty error (rewriting the box with ⊘) and is a no-op for unknown IDs.
+func TestCloseTaskCardFailureAndNoop(t *testing.T) {
+	m := newTestChatTUI()
+	args := `{"prompt":"Find callers","description":"Find callers of X"}`
+	m.commitLine(taskCardRender(args, m.width, taskCardOpen, nil, ""))
+	m.taskCards["subtask-1"] = taskCardSlot{idx: len(m.transcript) - 1, args: args}
+
+	if closed := m.closeTaskCard("subtask-1", "boom"); !closed {
+		t.Fatal("closeTaskCard with an error should report failure")
+	}
+	joined := strings.Join(m.transcript, "\n")
+	if !strings.Contains(joined, "⊘") || !strings.Contains(joined, "boom") {
+		t.Fatalf("failed subtask box should contain ⊘ and the error:\n%s", joined)
+	}
+
+	// Unknown ID: no-op, returns false, transcript untouched.
+	if closed := m.closeTaskCard("nope", "x"); closed {
+		t.Fatal("closeTaskCard for unknown id should return false")
 	}
 }

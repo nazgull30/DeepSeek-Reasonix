@@ -226,8 +226,13 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit   int        // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss  int        // Usage: cumulative cache-miss prompt tokens this session
+	SessionHit  int // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss int // Usage: cumulative cache-miss prompt tokens this session
+	// ParentID, when set, is the ID of the tool call that spawned the sub-agent
+	// that produced this event. ToolDispatch/ToolResult already carry it inside
+	// e.Tool.ParentID; Usage events (which have no Tool) use this top-level field
+	// so a frontend can attribute sub-agent token spend to its owning task call.
+	ParentID     string     // Usage: ancestor tool-call ID for sub-agent usage
 	Level        Level      // Notice
 	Approval     Approval   // ApprovalRequest
 	Ask          Ask        // AskRequest

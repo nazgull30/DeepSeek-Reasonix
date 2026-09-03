@@ -171,6 +171,15 @@ type chatTUI struct {
 	// toolLineCountByID keeps a switched-away tool's last line count so a late
 	// ToolResult can still render "⎿ N lines" (shellOutputs only tracks "shell-" ids).
 	toolLineCountByID map[string]int
+	// taskCards maps an open task tool call's ID to its boxed-card render state,
+	// so a sub-agent's ToolResult can rewrite the box in place with a ✓ / ⊘
+	// status and the token usage accumulated from its Usage events (matched via
+	// e.ParentID). Removed when the card closes.
+	taskCards map[string]taskCardSlot
+	// subtaskSeq generates unique synthetic parent IDs ("subtask-1", "subtask-2", …)
+	// for /subtask-launched sub-agents, whose tool activity flows to the TUI via a
+	// call context wired to eventCh (there's no real tool call to carry an ID).
+	subtaskSeq int
 	// toolStreamStart / toolStreamFrame drive the "⎿ working · Ns" line shown
 	// under a dispatched tool that hasn't produced output yet, so a slow tool
 	// reads as making progress rather than frozen.
@@ -399,9 +408,10 @@ type agentSendMsg struct {
 }
 
 type subtaskMsg struct {
-	desc   string
-	result string
-	err    error
+	desc     string
+	result   string
+	err      error
+	parentID string
 }
 
 // parseSubtaskKeyedValue extracts the value of a key=value /subtask option
@@ -560,6 +570,7 @@ func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Eve
 		shellExpanded:        make(map[string]bool),
 		shellTranscriptIdx:   make(map[string]int),
 		toolLineCountByID:    make(map[string]int),
+		taskCards:            make(map[string]taskCardSlot),
 		eventCh:              eventCh,
 		history:              ctrl.History(),
 		host:                 ctrl.Host(),
@@ -1436,6 +1447,11 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case subtaskMsg:
+		errMsg := ""
+		if msg.err != nil {
+			errMsg = msg.err.Error()
+		}
+		m.closeTaskCard(msg.parentID, errMsg)
 		if msg.err != nil {
 			m.notice(fmt.Sprintf("subtask %q failed: %v", msg.desc, msg.err))
 		} else {
@@ -2393,6 +2409,7 @@ var (
 	inputBoxStyle       lipgloss.Style
 	approvalBannerStyle lipgloss.Style
 	todoPanelStyle      lipgloss.Style
+	taskCardStyle       lipgloss.Style
 	statusBlockStyle    lipgloss.Style
 	workingStyle        lipgloss.Style
 )
@@ -3521,6 +3538,17 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			// means the model asked for an update.
 		case planApprovalTool:
 			// No longer a tool, but guard anyway: the plan is the assistant's reply.
+		case "task":
+			// A sub-agent call renders as a boxed card that completion rewrites
+			// with a ✓ / ⊘ status and the sub-agent's token usage. Both top-level
+			// calls and nested parallel subtasks get a card.
+			m.commitSpacer()
+			m.commitLine(taskCardRender(e.Tool.Args, m.width, taskCardOpen, nil, ""))
+			m.taskCards[e.Tool.ID] = taskCardSlot{
+				idx:  len(m.transcript) - 1,
+				args: e.Tool.Args,
+			}
+			m.beginToolRunning(e.Tool.ID)
 		default:
 			m.commitSpacer()
 			if block := diffBlock(e.Tool.Name, e.Tool.Args, e.Tool.FileDiff, m.width, m.diffMaxLines); block != nil {
@@ -3546,6 +3574,12 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		if e.Tool.Name == "todo_write" && e.Tool.Err == "" {
 			m.todoArgs = e.Tool.Args
 		}
+		if m.closeTaskCard(e.Tool.ID, e.Tool.Err) {
+			// A failed task's error is shown inside its box, so skip the generic
+			// red error card below (it would duplicate the ⊘ line).
+			m.finalizeStreamed()
+			break
+		}
 		if e.Tool.Err != "" {
 			m.finalizeStreamed()
 			m.commitLine("  " + red("●") + " " + bold(toolDisplayName(e.Tool.Name)) + " " + red("⊘ "+e.Tool.Err))
@@ -3554,6 +3588,10 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 	case event.Usage:
 		if e.Usage != nil {
 			m.turnTokens += e.Usage.CompletionTokens
+			if slot, ok := m.taskCards[e.ParentID]; ok {
+				slot.usage = addUsage(slot.usage, e.Usage)
+				m.taskCards[e.ParentID] = slot
+			}
 		}
 		if line := agent.FormatUsageLine(e.Usage, e.Pricing, e.CacheDiagnostics); line != "" {
 			m.finalizeStreamed()
@@ -4021,7 +4059,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			break
 		}
 		args := map[string]any{
-			"prompt": desc,
+			"prompt":      desc,
+			"description": desc,
 		}
 		if continueFrom != "" {
 			args["continue_from"] = continueFrom
@@ -4031,11 +4070,27 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			args["cache_from_parent"] = inherit
 		}
 		argsJSON, _ := json.Marshal(args)
+		// Render a boxed task card (open state) and register a synthetic parent ID
+		// for it, so the sub-agent's tool activity streams under it and its usage
+		// accumulates into the box, exactly like a model-driven task call.
+		m.commitSpacer()
+		m.commitLine(taskCardRender(string(argsJSON), m.width, taskCardOpen, nil, ""))
+		parentID := fmt.Sprintf("subtask-%d", m.subtaskSeq)
+		m.subtaskSeq++
+		m.taskCards[parentID] = taskCardSlot{
+			idx:  len(m.transcript) - 1,
+			args: string(argsJSON),
+		}
 		parentSession := agent.BranchID(m.ctrl.SessionPath())
 		return func() tea.Msg {
 			ctx := agent.WithParentSession(context.Background(), parentSession)
+			// Wire a call context so the sub-agent's nested tool events and usage
+			// are forwarded to the TUI's event stream (subSink reads this to nest
+			// them under parentID); the asker stays nil, consistent with sub-agents
+			// spawned by the model (their `ask` tool can't prompt either).
+			ctx = agent.WithNestedSink(ctx, parentID, &eventSink{ch: m.eventCh})
 			result, err := tt.Execute(ctx, argsJSON)
-			return subtaskMsg{desc: desc, result: result, err: err}
+			return subtaskMsg{desc: desc, result: result, err: err, parentID: parentID}
 		}
 	case "/agent_status":
 		m.echoLocalCommand(input)
@@ -4473,6 +4528,29 @@ func (m *chatTUI) commitAgentResult(result string) {
 		rendered = result
 	}
 	m.commitLine(strings.TrimRight(rendered, "\n"))
+}
+
+// closeTaskCard rewrites an open task card's box in place with a ✓ / ⊘ status
+// (and, on success, the accumulated sub-agent token usage) then removes the slot.
+// errMsg is the failure reason ("" = success). Returns true when the card existed
+// and was closed in a failed state, so the caller can skip a duplicate error card.
+// A no-op (returns false) when the slot is already gone (e.g. transcript reset).
+// Shared by the model-driven task ToolResult path and the /subtask completion
+// handler.
+func (m *chatTUI) closeTaskCard(parentID, errMsg string) bool {
+	slot, ok := m.taskCards[parentID]
+	if !ok {
+		return false
+	}
+	state := taskCardComplete
+	if errMsg != "" {
+		state = taskCardFailed
+	}
+	if slot.idx >= 0 && slot.idx < len(m.transcript) {
+		m.transcript[slot.idx] = taskCardRender(slot.args, m.width, state, slot.usage, errMsg)
+	}
+	delete(m.taskCards, parentID)
+	return state == taskCardFailed
 }
 
 // resolveRefs resolves a line's @references off the event loop via the

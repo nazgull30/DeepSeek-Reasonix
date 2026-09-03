@@ -124,6 +124,14 @@ func withCallContext(ctx context.Context, parentID string, sink event.Sink, aske
 	return context.WithValue(ctx, callContextKey{}, callContext{parentID: parentID, sink: sink, asker: asker, planMode: planMode})
 }
 
+// WithNestedSink stamps ctx with a call context so a sub-agent spawned directly
+// (outside the agent run loop — e.g. the /subtask command) forwards its nested
+// tool events and billable usage to sink, tagged with parentID. asker is nil, so
+// the sub-agent's `ask` tool cannot prompt, matching sub-agents the model spawns.
+func WithNestedSink(ctx context.Context, parentID string, sink event.Sink) context.Context {
+	return withCallContext(ctx, parentID, sink, nil, false)
+}
+
 // CallContext returns the executing call's ID, the agent's sink, and the asker,
 // if the context was set by an agent's executeOne. ok is false for a plain
 // context (headless tool tests, calls made outside the run loop).

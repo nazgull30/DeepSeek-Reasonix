@@ -716,6 +716,9 @@ func subSinkFor(parentID string, parent event.Sink) event.Sink {
 			if e.UsageSource == "" {
 				e.UsageSource = event.UsageSourceSubagent
 			}
+			// Tag the usage with the owning task call so a frontend can
+			// attribute sub-agent token spend back to its parent card.
+			e.ParentID = parentID
 			parent.Emit(e)
 		}
 	})
