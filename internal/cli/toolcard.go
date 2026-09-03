@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
 
@@ -169,4 +170,97 @@ func toolHead(name, arg string, width int) string {
 		head += dim("(") + clampPlain(arg, avail) + dim(")")
 	}
 	return head
+}
+
+// taskCardState tracks the lifecycle of a task tool's boxed card.
+type taskCardState int
+
+const (
+	taskCardOpen     taskCardState = iota // dispatched, sub-agent still running
+	taskCardComplete                      // finished OK
+	taskCardFailed                        // finished with an error
+)
+
+// taskCardSlot is the open-box render state the TUI keeps per task tool call.
+type taskCardSlot struct {
+	idx   int             // transcript index of the box (rewritten on close)
+	args  string          // raw args (for the description line)
+	usage *provider.Usage // accumulated sub-agent usage while open
+}
+
+// taskCardRender renders a task tool call as a box-style card. While the
+// sub-agent runs (taskCardOpen) it shows just the description; once it finishes
+// the box gains a ✓ / ⊘ glyph and, on success, a per-category token readout
+// (cached / new / output / reasoning) from the accumulated sub-agent usage.
+func taskCardRender(args string, width int, state taskCardState, u *provider.Usage, errMsg string) string {
+	desc := toolArg("task", args)
+	if desc == "" {
+		desc = "Task"
+	}
+
+	var b strings.Builder
+	switch state {
+	case taskCardComplete:
+		b.WriteString(green("✓") + " " + desc + "\n")
+		if line := taskUsageLine(u); line != "" {
+			b.WriteString("  " + line)
+		}
+	case taskCardFailed:
+		b.WriteString(red("⊘") + " " + desc)
+		if errMsg != "" {
+			b.WriteString("\n  " + dim("Error: "+clampPlain(errMsg, max(width-14, 1))))
+		}
+	default:
+		b.WriteString(desc)
+	}
+
+	return taskCardStyle.Width(max(width, 10)).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// taskUsageLine formats a sub-agent's accumulated token usage into a compact
+// per-category readout. Returns "" when there's nothing meaningful to show.
+func taskUsageLine(u *provider.Usage) string {
+	if u == nil || u.TotalTokens == 0 {
+		return ""
+	}
+	cached := u.CacheHitTokens
+	fresh := u.CacheMissTokens
+	if fresh == 0 && u.PromptTokens > cached {
+		fresh = u.PromptTokens - cached
+	}
+	reasoning := u.ReasoningTokens
+	output := u.CompletionTokens - reasoning
+	if output < 0 {
+		output = 0
+	}
+	var cols []string
+	cols = append(cols, "Σ "+shortTokens(u.TotalTokens))
+	if u.PromptTokens > 0 {
+		cols = append(cols, "⇥ "+shortTokens(cached)+" cached / "+shortTokens(fresh)+" new")
+	}
+	if u.CompletionTokens > 0 {
+		cols = append(cols, "↓ "+shortTokens(output))
+	}
+	if reasoning > 0 {
+		cols = append(cols, "🧠 "+shortTokens(reasoning))
+	}
+	return dim(strings.Join(cols, " · "))
+}
+
+// addUsage accumulates src into dst (creating dst if nil) so a frontend can sum
+// the multiple per-step Usage events a sub-agent emits during its run.
+func addUsage(dst, src *provider.Usage) *provider.Usage {
+	if src == nil {
+		return dst
+	}
+	if dst == nil {
+		dst = &provider.Usage{}
+	}
+	dst.PromptTokens += src.PromptTokens
+	dst.CompletionTokens += src.CompletionTokens
+	dst.TotalTokens += src.TotalTokens
+	dst.CacheHitTokens += src.CacheHitTokens
+	dst.CacheMissTokens += src.CacheMissTokens
+	dst.ReasoningTokens += src.ReasoningTokens
+	return dst
 }

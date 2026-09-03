@@ -171,6 +171,11 @@ type chatTUI struct {
 	// toolLineCountByID keeps a switched-away tool's last line count so a late
 	// ToolResult can still render "⎿ N lines" (shellOutputs only tracks "shell-" ids).
 	toolLineCountByID map[string]int
+	// taskCards maps an open task tool call's ID to its boxed-card render state,
+	// so a sub-agent's ToolResult can rewrite the box in place with a ✓ / ⊘
+	// status and the token usage accumulated from its Usage events (matched via
+	// e.ParentID). Removed when the card closes.
+	taskCards map[string]taskCardSlot
 	// toolStreamStart / toolStreamFrame drive the "⎿ working · Ns" line shown
 	// under a dispatched tool that hasn't produced output yet, so a slow tool
 	// reads as making progress rather than frozen.
@@ -560,6 +565,7 @@ func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Eve
 		shellExpanded:        make(map[string]bool),
 		shellTranscriptIdx:   make(map[string]int),
 		toolLineCountByID:    make(map[string]int),
+		taskCards:            make(map[string]taskCardSlot),
 		eventCh:              eventCh,
 		history:              ctrl.History(),
 		host:                 ctrl.Host(),
@@ -2393,6 +2399,7 @@ var (
 	inputBoxStyle       lipgloss.Style
 	approvalBannerStyle lipgloss.Style
 	todoPanelStyle      lipgloss.Style
+	taskCardStyle       lipgloss.Style
 	statusBlockStyle    lipgloss.Style
 	workingStyle        lipgloss.Style
 )
@@ -3521,6 +3528,17 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 			// means the model asked for an update.
 		case planApprovalTool:
 			// No longer a tool, but guard anyway: the plan is the assistant's reply.
+		case "task":
+			// A sub-agent call renders as a boxed card that completion rewrites
+			// with a ✓ / ⊘ status and the sub-agent's token usage. Both top-level
+			// calls and nested parallel subtasks get a card.
+			m.commitSpacer()
+			m.commitLine(taskCardRender(e.Tool.Args, m.width, taskCardOpen, nil, ""))
+			m.taskCards[e.Tool.ID] = taskCardSlot{
+				idx:  len(m.transcript) - 1,
+				args: e.Tool.Args,
+			}
+			m.beginToolRunning(e.Tool.ID)
 		default:
 			m.commitSpacer()
 			if block := diffBlock(e.Tool.Name, e.Tool.Args, e.Tool.FileDiff, m.width, m.diffMaxLines); block != nil {
@@ -3546,6 +3564,22 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		if e.Tool.Name == "todo_write" && e.Tool.Err == "" {
 			m.todoArgs = e.Tool.Args
 		}
+		if slot, ok := m.taskCards[e.Tool.ID]; ok {
+			state := taskCardComplete
+			errMsg := ""
+			if e.Tool.Err != "" {
+				state = taskCardFailed
+				errMsg = e.Tool.Err
+			}
+			m.finalizeStreamed()
+			m.transcript[slot.idx] = taskCardRender(slot.args, m.width, state, slot.usage, errMsg)
+			delete(m.taskCards, e.Tool.ID)
+			// A failed task's error is shown inside its box, so skip the generic
+			// red error card below (it would duplicate the ⊘ line).
+			if e.Tool.Err != "" {
+				break
+			}
+		}
 		if e.Tool.Err != "" {
 			m.finalizeStreamed()
 			m.commitLine("  " + red("●") + " " + bold(toolDisplayName(e.Tool.Name)) + " " + red("⊘ "+e.Tool.Err))
@@ -3554,6 +3588,10 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 	case event.Usage:
 		if e.Usage != nil {
 			m.turnTokens += e.Usage.CompletionTokens
+			if slot, ok := m.taskCards[e.ParentID]; ok {
+				slot.usage = addUsage(slot.usage, e.Usage)
+				m.taskCards[e.ParentID] = slot
+			}
 		}
 		if line := agent.FormatUsageLine(e.Usage, e.Pricing, e.CacheDiagnostics); line != "" {
 			m.finalizeStreamed()

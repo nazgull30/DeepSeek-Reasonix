@@ -403,6 +403,21 @@ func TestSubSinkForwardsUsageToParent(t *testing.T) {
 	}
 }
 
+func TestSubSinkTagsUsageWithParentID(t *testing.T) {
+	var got event.Event
+	parent := event.FuncSink(func(e event.Event) {
+		got = e
+	})
+	subSinkFor("task_1", parent).Emit(event.Event{
+		Kind:        event.Usage,
+		Usage:       &provider.Usage{PromptTokens: 10, CompletionTokens: 2, TotalTokens: 12},
+		UsageSource: event.UsageSourceSubagent,
+	})
+	if got.ParentID != "task_1" {
+		t.Fatalf("forwarded usage ParentID = %q, want task_1", got.ParentID)
+	}
+}
+
 // TestForkCacheSharing verifies the cache_from_parent fork subagent flow:
 //   - The forked subagent inherits the parent's stable conversation prefix
 //     (all complete rounds, i.e. messages before the last in-flight round)
