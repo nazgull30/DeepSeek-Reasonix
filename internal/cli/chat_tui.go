@@ -180,6 +180,29 @@ type chatTUI struct {
 	// for /subtask-launched sub-agents, whose tool activity flows to the TUI via a
 	// call context wired to eventCh (there's no real tool call to carry an ID).
 	subtaskSeq int
+	// flowRoots / flowByID hold the current turn's flow tree (main-agent tools,
+	// spawned subtasks, and nested children), rebuilt incrementally from events.
+	// flowOpen toggles the Ctrl+T popup; flowScroll is its line offset.
+	flowRoots  []*flowNode
+	flowByID   map[string]*flowNode
+	flowOpen   bool
+	flowScroll int
+	// flowMain* accumulate ONLY the main agent's own Usage events (ParentID == "",
+	// i.e. executor + planner), so the "main agent" line reflects its own spend.
+	flowMainTokens     int
+	flowMainCacheHit   int
+	flowMainCacheMiss  int
+	flowMainCompletion int
+	flowMainReasoning  int
+	flowMainCost       float64
+	// flowTotal* accumulate every Usage event (main agent + all subagents) this
+	// turn, backing the separate "total (all agents)" line in the flow popup.
+	flowTotalTokens     int
+	flowTotalCacheHit   int
+	flowTotalCacheMiss  int
+	flowTotalCompletion int
+	flowTotalReasoning  int
+	flowTotalCost       float64
 	// toolStreamStart / toolStreamFrame drive the "⎿ working · Ns" line shown
 	// under a dispatched tool that hasn't produced output yet, so a slow tool
 	// reads as making progress rather than frozen.
@@ -571,6 +594,7 @@ func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Eve
 		shellTranscriptIdx:   make(map[string]int),
 		toolLineCountByID:    make(map[string]int),
 		taskCards:            make(map[string]taskCardSlot),
+		flowByID:             make(map[string]*flowNode),
 		eventCh:              eventCh,
 		history:              ctrl.History(),
 		host:                 ctrl.Host(),
@@ -1094,6 +1118,12 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "up":
+			if m.flowOpen {
+				if m.flowScroll > 0 {
+					m.flowScroll--
+				}
+				return m, nil
+			}
 			if m.state == tuiRunning {
 				if m.navigateQueue(-1) {
 					return m, nil
@@ -1102,6 +1132,10 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "down":
+			if m.flowOpen {
+				m.flowScroll++
+				return m, nil
+			}
 			if m.state == tuiRunning {
 				if m.navigateQueue(1) {
 					return m, nil
@@ -1118,6 +1152,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.String() {
 		case "esc":
+			// The flow popup is a pure read-only overlay: Esc dismisses it without
+			// touching an in-flight turn (the composer is hidden while it is open,
+			// so the later cancel/clear gestures below are not reachable).
+			if m.flowOpen {
+				m.flowOpen = false
+				m.flowScroll = 0
+				return m, finalize(m, cmds)
+			}
 			// A live composer selection is the most specific in-progress state:
 			// the first Esc just deselects it.
 			if inputSel.active && !inputSel.empty() {
@@ -1236,6 +1278,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+o":
 			m.toggleVerboseReasoning(m.state != tuiRunning)
+			return m, finalize(m, cmds)
+		case "ctrl+t":
+			// Live flow popup: main agent → subtasks → nested children. Toggles
+			// open/closed; read-only, so it never cancels a running turn. Esc also
+			// closes it.
+			m.flowOpen = !m.flowOpen
+			m.flowScroll = 0
 			return m, finalize(m, cmds)
 		case "ctrl+shift+m":
 			m.mouseDisabled = !m.mouseDisabled
@@ -1452,6 +1501,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			errMsg = msg.err.Error()
 		}
 		m.closeTaskCard(msg.parentID, errMsg)
+		m.flowEndSubtask(msg.parentID, msg.err != nil)
 		if msg.err != nil {
 			m.notice(fmt.Sprintf("subtask %q failed: %v", msg.desc, msg.err))
 		} else {
@@ -1683,6 +1733,7 @@ func (m chatTUI) bottomRows() int {
 		m.renderApprovalBanner(),
 		m.renderChooser(),
 		m.renderRewind(),
+		m.renderFlow(),
 		m.renderMCPImport(),
 		m.renderResumePicker(),
 		m.renderCopyPicker(),
@@ -1726,6 +1777,9 @@ func (m chatTUI) bottomRows() int {
 // reserve rows for a composer that cannot receive input, leaving a confusing
 // blank/bordered area at the bottom of the TUI.
 func (m chatTUI) hideComposer() bool {
+	if m.flowOpen {
+		return true
+	}
 	if m.mcp != nil || m.clearConfirm != nil || m.mcpImport != nil || m.skillPick != nil || m.resumePick != nil || m.copyPick != nil || m.rewind != nil || m.pendingApproval != nil {
 		return true
 	}
@@ -2467,6 +2521,8 @@ func (m chatTUI) View() tea.View {
 		status = "  " + modeTag + " · MCP"
 	case m.skillPick != nil:
 		status = "  " + modeTag + " · " + i18n.M.SkillPickerStatusLabel
+	case m.flowOpen:
+		status = "  " + modeTag + " · " + i18n.M.FlowStatusLabel
 	case m.chooser != nil:
 		status = "  " + modeTag + " · " + i18n.M.ChatStatusQuestion
 	case m.pendingApproval != nil && m.pendingApproval.Tool == planApprovalTool:
@@ -3491,6 +3547,9 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 	if e.Kind != event.TurnStarted && e.Kind != event.TurnDone {
 		m.confirmBubbleSent()
 	}
+	// Fold the event into the live flow tree (Ctrl+T popup) regardless of how the
+	// cases below render it.
+	m.flowApply(e)
 	switch e.Kind {
 	case event.Reasoning:
 		if m.nativeScrollback {
@@ -4081,6 +4140,10 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			idx:  len(m.transcript) - 1,
 			args: string(argsJSON),
 		}
+		// Surface the sub-agent in the flow popup too: /subtask runs are not tool
+		// calls, so their node must be created explicitly (and marked done when the
+		// async run reports back).
+		m.flowStartSubtask(parentID, desc)
 		parentSession := agent.BranchID(m.ctrl.SessionPath())
 		return func() tea.Msg {
 			ctx := agent.WithParentSession(context.Background(), parentSession)

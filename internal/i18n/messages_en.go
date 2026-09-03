@@ -270,6 +270,15 @@ var English = Messages{
 	RewindApplyHint:        "↑/↓ · Enter apply · Esc back",
 	RewindEmpty:            "(empty)",
 
+	FlowTitle:           "Flow — current turn",
+	FlowMainAgent:       "main agent",
+	FlowEmpty:           "no subagents yet",
+	FlowHint:            "↑/↓ scroll · Esc / Ctrl+T close",
+	FlowStatusLabel:     "flow",
+	FlowTagSubagent:     "subagent",
+	FlowTagOrchestrator: "orchestrator",
+	FlowTotalAll:        "total (all agents)",
+
 	SelectProvidersLabel:  "Select providers to enable",
 	EnterAPIKeysHeader:    "Enter API keys (Enter to skip and set later):",
 	MissingKeyIntro:       "reasonix.toml is ready — just an API key away.",

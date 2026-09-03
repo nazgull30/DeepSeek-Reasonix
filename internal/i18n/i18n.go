@@ -261,6 +261,16 @@ type Messages struct {
 	RewindApplyHint        string
 	RewindEmpty            string
 
+	// flow popup (Ctrl+T live flow tree in the CLI TUI)
+	FlowTitle           string
+	FlowMainAgent       string
+	FlowEmpty           string
+	FlowHint            string
+	FlowStatusLabel     string
+	FlowTagSubagent     string
+	FlowTagOrchestrator string
+	FlowTotalAll        string // "total (all agents)" — whole-turn total line
+
 	// skill picker overlay (/skills interactive panel in CLI TUI)
 	SkillPickerTitle             string
 	SkillPickerAvailableFmt      string

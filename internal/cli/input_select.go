@@ -191,6 +191,7 @@ func (m chatTUI) bottomPartsAboveBox(boxW int) []string {
 	add(m.renderApprovalBanner())
 	add(m.renderChooser())
 	add(m.renderRewind())
+	add(m.renderFlow())
 	add(m.renderMCPImport())
 	add(m.renderResumePicker())
 	add(m.renderCopyPicker())
