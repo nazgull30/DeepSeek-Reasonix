@@ -665,3 +665,16 @@ func TestSubsequenceMatchUnit(t *testing.T) {
 		}
 	}
 }
+
+// TestSlashCompletionIncludesSubtask proves /subtask is offered in the slash
+// menu unconditionally (it runs through the task tool, not the orchestrator),
+// so typing /su<TAB> surfaces it alongside the other built-ins.
+func TestSlashCompletionIncludesSubtask(t *testing.T) {
+	m := newTestChatTUI()
+	m.input.SetValue("/su")
+	m.updateCompletion()
+
+	if !hasLabel(m.completion.items, "/subtask") {
+		t.Errorf("/subtask should appear in completion: %v", labels(m.completion.items))
+	}
+}

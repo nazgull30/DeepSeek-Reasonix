@@ -59,7 +59,36 @@ const (
 
 // slashItems is the full set of slash commands offered for completion: the
 // built-in verbs, custom commands, skills (each as "/<name>"), and MCP prompts.
+// It is cached across keystrokes and rebuilt only when the underlying sources
+// (commands, skills, prompts, orchestrator) change via bumpSlashCompletion, so
+// typing a "/" command doesn't reconstruct and re-filter the list each key.
 func (m *chatTUI) slashItems() []compItem {
+	if m.slashCache != nil && m.slashCacheGen == m.slashBuildGen {
+		return m.slashCache
+	}
+	m.slashBuildGen = m.slashCacheGen
+	m.slashCache = m.buildSlashItems()
+	m.slashLowerCache = make([]string, len(m.slashCache))
+	for i, it := range m.slashCache {
+		m.slashLowerCache[i] = strings.ToLower(it.label)
+	}
+	return m.slashCache
+}
+
+// slashLower returns the already-lowercased labels parallel to slashItems(), so
+// the fuzzy filter can match without re-lowercasing (and allocating) per item.
+func (m *chatTUI) slashLower() []string {
+	m.slashItems()
+	return m.slashLowerCache
+}
+
+// bumpSlashCompletion invalidates the cached slash-completion item list. Call it
+// whenever commands, skills, MCP prompts, or the orchestrator are replaced.
+func (m *chatTUI) bumpSlashCompletion() {
+	m.slashCacheGen++
+}
+
+func (m *chatTUI) buildSlashItems() []compItem {
 	items := []compItem{
 		{label: "/compact", insert: "/compact ", hint: i18n.M.CmdCompact},
 		{label: "/new", insert: "/new ", hint: i18n.M.CmdNew},
@@ -88,6 +117,7 @@ func (m *chatTUI) slashItems() []compItem {
 		{label: "/language", insert: "/language ", hint: i18n.M.CmdLanguage, descend: true},
 		{label: "/context", insert: "/context", hint: i18n.M.CmdContext},
 		{label: "/stats", insert: "/stats ", hint: i18n.M.CmdStats},
+		{label: "/subtask", insert: "/subtask ", hint: "spawn an ad-hoc sub-agent (true:|false: for parent context; continue_from=/fork_from= sa_... to chain rounds)"},
 		{label: "/help", insert: "/help ", hint: i18n.M.CmdHelp},
 		{label: "/memory", insert: "/memory ", hint: i18n.M.CmdMemory},
 		{label: "/migrate", insert: "/migrate", hint: i18n.M.CmdMigrate},
@@ -146,7 +176,7 @@ func (m *chatTUI) updateCompletion() {
 		}
 		if !strings.ContainsAny(val, " \t\n") {
 			// Still naming the command itself.
-			if items := fuzzyFilterSlash(m.slashItems(), val); len(items) > 0 {
+			if items := m.fuzzyFilterSlash(val); len(items) > 0 {
 				m.setCompletion(compSlash, items, 0)
 				return
 			}
@@ -319,30 +349,38 @@ func (m *chatTUI) setCompletion(kind compKind, items []compItem, replaceFrom int
 // matches everything — the same behavior the old prefix filter had, since
 // every label trivially starts with "". A query that matches nothing returns
 // nil so the caller can fall through and close the menu.
-func fuzzyFilterSlash(items []compItem, query string) []compItem {
+//
+// The result is written into a per-TUI scratch buffer that is reused across
+// keystrokes, so filtering even a large menu on every key doesn't allocate a
+// fresh result slice (a source of input lag while typing "/"). The returned
+// slice is only valid until the next fuzzyFilterSlash call overwrites it,
+// which is exactly how updateCompletion drives the menu.
+func (m *chatTUI) fuzzyFilterSlash(query string) []compItem {
+	items := m.slashItems()
+	buf := m.slashFilterBuf[:0]
 	if query == "" {
-		out := make([]compItem, len(items))
-		copy(out, items)
-		return out
+		buf = append(buf, items...)
+		m.slashFilterBuf = buf
+		return m.slashFilterBuf
 	}
 	lq := strings.ToLower(query)
-	var prefix, rest []compItem
-	for _, it := range items {
-		l := strings.ToLower(it.label)
-		switch {
-		case strings.HasPrefix(l, lq):
-			prefix = append(prefix, it)
-		case subsequenceMatch(l, lq):
-			rest = append(rest, it)
+	qr := []rune(lq)
+	lower := m.slashLower()
+	for i, it := range items {
+		if strings.HasPrefix(lower[i], lq) {
+			buf = append(buf, it)
 		}
 	}
-	if len(prefix) == 0 && len(rest) == 0 {
+	for i, it := range items {
+		if !strings.HasPrefix(lower[i], lq) && subsequenceMatchRunes(lower[i], qr) {
+			buf = append(buf, it)
+		}
+	}
+	m.slashFilterBuf = buf
+	if len(buf) == 0 {
 		return nil
 	}
-	out := make([]compItem, 0, len(prefix)+len(rest))
-	out = append(out, prefix...)
-	out = append(out, rest...)
-	return out
+	return m.slashFilterBuf
 }
 
 // subsequenceMatch reports whether query appears in target as a case-folded
@@ -353,10 +391,16 @@ func fuzzyFilterSlash(items []compItem, query string) []compItem {
 // every target, so callers that want a "no match" signal on the empty input
 // should check that first.
 func subsequenceMatch(target, query string) bool {
-	if query == "" {
+	return subsequenceMatchRunes(target, []rune(query))
+}
+
+// subsequenceMatchRunes is subsequenceMatch with the query already decoded to
+// runes, so the fuzzy filter decodes the query once per keystroke instead of
+// allocating a fresh []rune for every candidate item.
+func subsequenceMatchRunes(target string, qr []rune) bool {
+	if len(qr) == 0 {
 		return true
 	}
-	qr := []rune(query)
 	ti := 0
 	for _, r := range target {
 		if r == qr[ti] {

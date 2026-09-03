@@ -270,6 +270,21 @@ type chatTUI struct {
 	// in the slash menu as "/<name>" and managed via /skills.
 	skills []skill.Skill
 
+	// slashCache memoizes the base slash-completion item list produced by
+	// slashItems(). It's rebuilt only when slashCacheGen advances — i.e. when
+	// commands, skills, MCP prompts, or the orchestrator change — so typing a
+	// "/" command doesn't reconstruct and re-filter the whole list per keystroke.
+	slashCache    []compItem
+	slashCacheGen int
+	slashBuildGen int
+	// slashLowerCache is the parallel lowercased-label slice for slashCache, so
+	// the fuzzy filter never re-lowercases (and re-allocates) each label per key.
+	slashLowerCache []string
+	// slashFilterBuf is a scratch slice reused across keystrokes by the slash
+	// fuzzy filter, so filtering a large menu on every key doesn't allocate a
+	// fresh result slice each time (the source of input lag while typing "/").
+	slashFilterBuf []compItem
+
 	// skillPick is the interactive skill picker overlay for /skills. nil when closed.
 	skillPick *skillPicker
 
@@ -381,6 +396,25 @@ type agentSendMsg struct {
 	message string
 	result  string
 	err     error
+}
+
+type subtaskMsg struct {
+	desc   string
+	result string
+	err    error
+}
+
+// parseSubtaskKeyedValue extracts the value of a key=value /subtask option
+// (e.g. continue_from=sa_...) that appears as a space-delimited prefix. It
+// returns the remaining text after the value plus the value itself (trimmed).
+func parseSubtaskKeyedValue(rest string) (rem, val string) {
+	rest = strings.TrimSpace(rest)
+	for i, r := range rest {
+		if r == ' ' || r == '\t' || r == '\n' {
+			return strings.TrimSpace(rest[i:]), strings.TrimSpace(rest[:i])
+		}
+	}
+	return "", strings.TrimSpace(rest)
 }
 
 // runStatusline runs the user's custom status-line command off the event loop,
@@ -1401,6 +1435,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commitAgentResult(msg.result)
 		}
 
+	case subtaskMsg:
+		if msg.err != nil {
+			m.notice(fmt.Sprintf("subtask %q failed: %v", msg.desc, msg.err))
+		} else {
+			m.notice(fmt.Sprintf("subtask %q done", msg.desc))
+			m.commitAgentResult(msg.result)
+		}
+
 	case compactDoneMsg:
 		if msg.err != nil {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, msg.err))
@@ -1422,6 +1464,7 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.host = msg.host
 			m.modelRef = msg.ref
 			m.refreshEffortStatus()
+			m.bumpSlashCompletion()
 			// Stash the old controller for cleanup at exit. It cannot be
 			// closed here or in the build goroutine — Close() runs
 			// SessionEnd hooks and kills plugin subprocesses, both of
@@ -3562,6 +3605,7 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 		if m.ctrl != nil {
 			m.host = m.ctrl.Host()
 		}
+		m.bumpSlashCompletion()
 		m.refreshMCPManager()
 
 	case event.TurnDone:
@@ -3771,6 +3815,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		prev := len(m.commands)
 		err := m.ctrl.ReloadCommands(context.Background())
 		m.commands = m.ctrl.Commands()
+		m.bumpSlashCompletion()
 		m.updateCompletion()
 		if err != nil {
 			m.notice("reload-cmd: " + err.Error())
@@ -3927,6 +3972,70 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		return func() tea.Msg {
 			result, err := orc.SendMessage(context.Background(), name, msg)
 			return agentSendMsg{name: name, message: msg, result: result, err: err}
+		}
+	case "/subtask":
+		m.echoLocalCommand(input)
+		tt := m.ctrl.TaskTool()
+		if tt == nil {
+			m.notice("task tool unavailable (is token economy mode active?)")
+			break
+		}
+		if m.ctrl.Running() {
+			m.notice("finish the current turn before starting a sub-task")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		inherit := false
+		inheritSet := false
+		continueFrom := ""
+		forkFrom := ""
+		if after, ok := strings.CutPrefix(rest, "true:"); ok {
+			inherit = true
+			inheritSet = true
+			rest = strings.TrimSpace(after)
+		} else if after, ok := strings.CutPrefix(rest, "false:"); ok {
+			inheritSet = true
+			rest = strings.TrimSpace(after)
+		}
+		// continue_from=/fork_from= let the user chain /subtask rounds onto a
+		// prior sub-agent's transcript (sa_... reference from a previous result),
+		// so iterative review/fix loops reuse its focused context instead of
+		// re-exploring from scratch each time.
+		if after, ok := strings.CutPrefix(rest, "continue_from="); ok {
+			rest, continueFrom = parseSubtaskKeyedValue(after)
+		}
+		if after, ok := strings.CutPrefix(rest, "fork_from="); ok {
+			rest, forkFrom = parseSubtaskKeyedValue(after)
+		}
+		if inheritSet && continueFrom != "" {
+			m.notice("true: is not compatible with continue_from")
+			break
+		}
+		if continueFrom != "" && forkFrom != "" {
+			m.notice("continue_from and fork_from are mutually exclusive")
+			break
+		}
+		desc := rest
+		if desc == "" {
+			m.notice("usage: /subtask [true:|false:] [continue_from=sa_...|fork_from=sa_...] <description>")
+			break
+		}
+		args := map[string]any{
+			"prompt": desc,
+		}
+		if continueFrom != "" {
+			args["continue_from"] = continueFrom
+		} else if forkFrom != "" {
+			args["fork_from"] = forkFrom
+		} else {
+			args["cache_from_parent"] = inherit
+		}
+		argsJSON, _ := json.Marshal(args)
+		parentSession := agent.BranchID(m.ctrl.SessionPath())
+		return func() tea.Msg {
+			ctx := agent.WithParentSession(context.Background(), parentSession)
+			result, err := tt.Execute(ctx, argsJSON)
+			return subtaskMsg{desc: desc, result: result, err: err}
 		}
 	case "/agent_status":
 		m.echoLocalCommand(input)

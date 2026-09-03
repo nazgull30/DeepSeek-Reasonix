@@ -2829,6 +2829,25 @@ func (c *Controller) Registry() *tool.Registry {
 	return c.reg
 }
 
+// TaskTool returns the registered ad-hoc sub-agent tool (the `task` tool), or
+// nil when it isn't present in the registry (e.g. token-economy mode defers it).
+// The TUI's /subtask slash command uses it to spawn a sub-agent from the live
+// controller without building a fresh provider/registry.
+func (c *Controller) TaskTool() *agent.TaskTool {
+	if c.reg == nil {
+		return nil
+	}
+	tt, ok := c.reg.Get("task")
+	if !ok {
+		return nil
+	}
+	t, ok := tt.(*agent.TaskTool)
+	if !ok {
+		return nil
+	}
+	return t
+}
+
 func (c *Controller) History() []provider.Message {
 	if c.executor == nil {
 		return nil
