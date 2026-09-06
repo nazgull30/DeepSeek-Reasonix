@@ -358,7 +358,7 @@ func flowStatusFromSubagent(s agent.SubagentStatus) flowStatus {
 	switch s {
 	case agent.SubagentCompleted:
 		return flowCompleted
-	case agent.SubagentRunning:
+	case agent.SubagentRunning, agent.SubagentPaused:
 		return flowRunning
 	default: // failed, interrupted, unknown
 		return flowFailed

@@ -433,7 +433,7 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 			}()
 			answer, err := t.runSubSession(jobCtx, p.Prompt, subReg, nested, maxSteps, prov, pricing, ctxWin, run)
 			if err != nil {
-				return FormatSubagentResult("", run.Ref, true), errors.Join(err, t.transcripts.SaveFailed(run))
+				return FormatSubagentResult("", run.Ref, true), errors.Join(err, t.saveSubagentFailure(run, err))
 			}
 			if err := t.transcripts.SaveCompleted(run); err != nil {
 				return FormatSubagentResult("", run.Ref, true), errors.Join(err, t.transcripts.SaveFailed(run))
@@ -450,7 +450,15 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 	defer run.Release()
 	answer, err := t.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, run)
 	if err != nil {
-		return "", errors.Join(err, t.transcripts.SaveFailed(run))
+		// A user-interrupt surfaces as a cancellation on the shared run context and
+		// is classified as a clean pause: the transcript stays resumable via
+		// continue_from, so the retry reuses the warm provider prompt cache instead
+		// of re-deriving context. Everything else stays a hard failed terminal state.
+		saveErr := t.saveSubagentFailure(run, err)
+		if errors.Is(err, context.Canceled) && run != nil && run.Ref != "" {
+			return "", errors.Join(err, fmt.Errorf("subagent %s was interrupted and paused; you may continue_from it to resume result on the cache", run.Ref), saveErr)
+		}
+		return "", errors.Join(err, saveErr)
 	}
 	if t.transcripts != nil && run.Ref != "" {
 		if err := t.transcripts.SaveCompleted(run); err != nil {
@@ -459,6 +467,18 @@ func (t *TaskTool) Execute(ctx context.Context, args json.RawMessage) (string, e
 		return FormatSubagentResult(answer, run.Ref, false), nil
 	}
 	return answer, nil
+}
+
+// saveSubagentFailure persists a failed run in the terminal state for real
+// errors, or in the resumable paused state when the run was cut by a context
+// cancellation (explicit user interrupt). A paused transcript can be resumed in
+// place with continue_from, preserving the provider prompt cache; a failed one
+// stays non-continuable so a poisoned history can never be resumed.
+func (t *TaskTool) saveSubagentFailure(run *SubagentRun, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return t.transcripts.SavePaused(run)
+	}
+	return t.transcripts.SaveFailed(run)
 }
 
 func (t *TaskTool) prepareTranscriptRun(subReg *tool.Registry, modelRef, effortRef, parentSession, parentID, continueFrom, forkFrom string) (*SubagentRun, error) {
