@@ -82,12 +82,6 @@ func (m *chatTUI) flowReset() {
 	m.flowMainCompletion = 0
 	m.flowMainReasoning = 0
 	m.flowMainCost = 0
-	m.flowTotalTokens = 0
-	m.flowTotalCacheHit = 0
-	m.flowTotalCacheMiss = 0
-	m.flowTotalCompletion = 0
-	m.flowTotalReasoning = 0
-	m.flowTotalCost = 0
 }
 
 // flowHistoryByID lazily initialises the whole-session history maps.
@@ -425,15 +419,6 @@ func (m *chatTUI) flowApply(e event.Event) {
 		}
 	case event.Usage:
 		if e.Usage != nil {
-			// Whole-turn total: every event (main agent + all subagents).
-			m.flowTotalTokens += e.Usage.TotalTokens
-			m.flowTotalCacheHit += e.Usage.CacheHitTokens
-			m.flowTotalCacheMiss += e.Usage.CacheMissTokens
-			m.flowTotalCompletion += e.Usage.CompletionTokens
-			m.flowTotalReasoning += e.Usage.ReasoningTokens
-			if e.Pricing != nil {
-				m.flowTotalCost += e.Pricing.Cost(e.Usage)
-			}
 			if e.ParentID == "" {
 				// Main agent's own spend (executor + planner are top-level).
 				m.flowMainTokens += e.Usage.TotalTokens
@@ -581,9 +566,11 @@ func (m *chatTUI) renderFlow() string {
 	}
 	b.WriteString(title + "\n")
 
-	// Main agent: whole-session usage from the BranchMeta sidecar (authoritative
-	// across resumes); when the live in-process total for the current turn has
-	// outrun the last saved snapshot, append it as a live hint.
+	// Main agent: the BranchMeta sidecar's cumulative spend across the session,
+	// reconciled with the live per-turn accumulator. The live counter is the very
+	// same accumulation the snapshot was written from — only later — so when it
+	// has outrun the snapshot it is simply the newer truth, not something to add
+	// on top. This keeps exactly one figure per line (no doubling-looking hints).
 	mainUsage, mainCost := m.flowMainSessionUsage()
 	root := bold(i18n.M.FlowMainAgent)
 	if mr := m.modelRef; mr != "" {
@@ -591,9 +578,6 @@ func (m *chatTUI) renderFlow() string {
 	}
 	if mainUsage != nil && mainUsage.TotalTokens > 0 {
 		root += " · " + flowUsageLine(mainUsage, mainCost)
-	}
-	if live := m.flowMainLiveHint(mainUsage); live != nil {
-		root += dim(" · live " + flowUsageLine(live, m.flowMainCost))
 	}
 	b.WriteString(root + "\n")
 
@@ -618,71 +602,41 @@ func (m *chatTUI) renderFlow() string {
 		b.WriteString(dim(i18n.M.FlowSubagentAll) + " · " + flowUsageLine(subUsage, subCost) + "\n")
 	}
 	if totalUsage, totalCost := flowAddUsage(mainUsage, mainCost, subUsage, subCost); totalUsage.TotalTokens > 0 {
-		line := dim(i18n.M.FlowTotalAll) + " · " + flowUsageLine(totalUsage, totalCost)
-		if live := m.flowLiveTotal(totalUsage); live != nil {
-			line += dim(" · live " + flowUsageLine(live, m.flowTotalCost))
-		}
-		b.WriteString(line + "\n")
+		b.WriteString(dim(i18n.M.FlowTotalAll) + " · " + flowUsageLine(totalUsage, totalCost) + "\n")
 	}
 	b.WriteString(dim(i18n.M.FlowHint))
 	return choicePanelStyle.Width(w).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-// flowMainSessionUsage returns the whole-session main-agent spend (BranchMeta
-// sidecar), falling back to the live per-turn accumulation when no sidecar exists
-// yet (a fresh session mid-first-turn).
+// flowMainSessionUsage returns the whole-session main-agent spend. The BranchMeta
+// sidecar is authoritative across resumes; the live per-turn accumulator (the
+// same counter, a few seconds newer) takes over when it has moved past the last
+// snapshot — a fresh session mid-first-turn, or an in-flight turn past the last
+// auto-save. One source is always returned, never a sum.
 func (m *chatTUI) flowMainSessionUsage() (*provider.Usage, float64) {
-	if m.flowSessionMain != nil {
-		return m.flowSessionMain, m.flowSessionMainCost
-	}
-	if m.flowMainTokens <= 0 {
-		return nil, 0
-	}
-	return &provider.Usage{
+	live := &provider.Usage{
 		TotalTokens:      m.flowMainTokens,
 		PromptTokens:     m.flowMainCacheHit + m.flowMainCacheMiss,
 		CacheHitTokens:   m.flowMainCacheHit,
 		CacheMissTokens:  m.flowMainCacheMiss,
 		CompletionTokens: m.flowMainCompletion,
 		ReasoningTokens:  m.flowMainReasoning,
-	}, m.flowMainCost
-}
-
-// flowMainLiveHint returns the live per-turn main-agent total when it has
-// outrun the persisted session snapshot (an in-flight turn past the last save),
-// so the popup shows both numbers rather than silently lagging.
-func (m *chatTUI) flowMainLiveHint(session *provider.Usage) *provider.Usage {
-	if m.flowMainTokens <= 0 {
-		return nil
 	}
-	if session == nil || m.flowMainTokens > session.TotalTokens {
-		return &provider.Usage{
-			TotalTokens:      m.flowMainTokens,
-			PromptTokens:     m.flowMainCacheHit + m.flowMainCacheMiss,
-			CacheHitTokens:   m.flowMainCacheHit,
-			CacheMissTokens:  m.flowMainCacheMiss,
-			CompletionTokens: m.flowMainCompletion,
-			ReasoningTokens:  m.flowMainReasoning,
+	if m.flowSessionMain != nil {
+		// Sidecar is at least as fresh as the live counter → it's the number.
+		if m.flowMainTokens <= 0 || m.flowMainTokens <= m.flowSessionMain.TotalTokens {
+			return m.flowSessionMain, m.flowSessionMainCost
 		}
+		// Live has moved past the snapshot → it is the number (not a sum).
+		if live.TotalTokens > 0 {
+			return live, m.flowMainCost
+		}
+		return m.flowSessionMain, m.flowSessionMainCost
 	}
-	return nil
-}
-
-// flowLiveTotal returns the accumulated live whole-turn spend (main + all
-// subagents this process has seen so far) when it has outrun the session
-// snapshot, so the total line also shows both numbers mid-turn.
-func (m *chatTUI) flowLiveTotal(session *provider.Usage) *provider.Usage {
-	if m.flowTotalTokens <= 0 || session == nil || m.flowTotalTokens <= session.TotalTokens {
-		return nil
+	if live.TotalTokens <= 0 {
+		return nil, 0
 	}
-	return &provider.Usage{
-		TotalTokens:      m.flowTotalTokens,
-		PromptTokens:     m.flowTotalCacheHit + m.flowTotalCacheMiss,
-		CacheHitTokens:   m.flowTotalCacheHit,
-		CacheMissTokens:  m.flowTotalCacheMiss,
-		CompletionTokens: m.flowTotalCompletion,
-		ReasoningTokens:  m.flowTotalReasoning,
-	}
+	return live, m.flowMainCost
 }
 
 // flowSubagentSessionUsage sums every subagent node's spend — the persisted

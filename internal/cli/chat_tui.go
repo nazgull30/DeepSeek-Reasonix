@@ -216,14 +216,6 @@ type chatTUI struct {
 	flowMainCompletion int
 	flowMainReasoning  int
 	flowMainCost       float64
-	// flowTotal* accumulate every Usage event (main agent + all subagents) this
-	// turn, backing the separate "total (all agents)" line in the flow popup.
-	flowTotalTokens     int
-	flowTotalCacheHit   int
-	flowTotalCacheMiss  int
-	flowTotalCompletion int
-	flowTotalReasoning  int
-	flowTotalCost       float64
 	// toolStreamStart / toolStreamFrame drive the "⎿ working · Ns" line shown
 	// under a dispatched tool that hasn't produced output yet, so a slow tool
 	// reads as making progress rather than frozen.

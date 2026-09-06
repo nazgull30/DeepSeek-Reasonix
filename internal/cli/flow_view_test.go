@@ -675,3 +675,34 @@ func TestFlowHistoryEmptyWithoutPersistence(t *testing.T) {
 		t.Fatalf("history = %d, want 0 without persistence", len(m.flowHistory))
 	}
 }
+
+// TestFlowMainReconciledLiveVsSession proves the main-agent line never shows two
+// cumulative figures (session snapshot + live hint): when the live accumulator
+// has moved past the last saved BranchMeta, it REPLACES the snapshot as one
+// number, and the total stays exactly main + subagents.
+func TestFlowMainReconciledLiveVsSession(t *testing.T) {
+	m, add := flowHistoryAt(t, "abc123", 2, &agent.SessionUsageMeta{TotalTokens: 500, Cost: 0.0005})
+	add("sa_top", "call-task", "task", "task", 1, agent.SubagentCompleted, &agent.SessionUsageMeta{TotalTokens: 200, Cost: 0.0002})
+	m.flowOpen = true
+	m.flowLoadHistory(true)
+
+	// In-flight turn drives the main-agent counter past the last snapshot.
+	pricing := &provider.Pricing{Input: 1.0}
+	m.flowApply(event.Event{Kind: event.Usage, Usage: &provider.Usage{TotalTokens: 600, PromptTokens: 600, CacheMissTokens: 600}, Pricing: pricing})
+
+	out := m.renderFlow()
+	mainLine := flowLineContaining(out, "main agent")
+	if mainLine == "" || !strings.Contains(mainLine, "Σ 600") {
+		t.Fatalf("main line should show the newer live total (Σ 600):\n%s", out)
+	}
+	if strings.Contains(mainLine, "Σ 500") || strings.Contains(mainLine, "· live") {
+		t.Fatalf("main line must not double up snapshot + live:\n%s", out)
+	}
+	totalLine := flowLineContaining(out, i18n.M.FlowTotalAll)
+	if totalLine == "" || !strings.Contains(totalLine, "Σ 800") {
+		t.Fatalf("total should be exactly 600 main + 200 subagents (Σ 800):\n%s", out)
+	}
+	if strings.Contains(totalLine, "· live") {
+		t.Fatalf("total line must not carry a live hint:\n%s", out)
+	}
+}
