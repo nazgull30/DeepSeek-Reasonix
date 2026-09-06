@@ -252,8 +252,10 @@ var ChineseTraditional = Messages{
 	RewindApplyHint:        "↑/↓ · Enter 套用 · Esc 返回",
 	RewindEmpty:            "(空)",
 
-	FlowTitle:           "流程 — 目前回合",
+	FlowTitle:           "流程 — 會話",
+	FlowTurnsFmt:        "%d 回合",
 	FlowMainAgent:       "主代理",
+	FlowSubagentAll:     "子代理（會話）",
 	FlowEmpty:           "尚無子任務",
 	FlowHint:            "↑/↓ 捲動 · Esc / Ctrl+T 關閉",
 	FlowStatusLabel:     "流程",

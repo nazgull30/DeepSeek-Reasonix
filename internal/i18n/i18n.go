@@ -261,15 +261,17 @@ type Messages struct {
 	RewindApplyHint        string
 	RewindEmpty            string
 
-	// flow popup (Ctrl+T live flow tree in the CLI TUI)
+	// flow popup (Ctrl+T flow tree in the CLI TUI)
 	FlowTitle           string
+	FlowTurnsFmt        string // "%d turns" — whole-session turn count suffix on the title
 	FlowMainAgent       string
+	FlowSubagentAll     string // "subagents (session)" — subagent spend line
 	FlowEmpty           string
 	FlowHint            string
 	FlowStatusLabel     string
 	FlowTagSubagent     string
 	FlowTagOrchestrator string
-	FlowTotalAll        string // "total (all agents)" — whole-turn total line
+	FlowTotalAll        string // "total (all agents)" — whole-session total line
 
 	// skill picker overlay (/skills interactive panel in CLI TUI)
 	SkillPickerTitle             string

@@ -271,8 +271,10 @@ var Chinese = Messages{
 	RewindApplyHint:        "↑/↓ · Enter 应用 · Esc 返回",
 	RewindEmpty:            "(空)",
 
-	FlowTitle:           "流程 — 当前回合",
+	FlowTitle:           "流程 — 会话",
+	FlowTurnsFmt:        "%d 回合",
 	FlowMainAgent:       "主代理",
+	FlowSubagentAll:     "子代理（会话）",
 	FlowEmpty:           "暂无子任务",
 	FlowHint:            "↑/↓ 滚动 · Esc / Ctrl+T 关闭",
 	FlowStatusLabel:     "流程",

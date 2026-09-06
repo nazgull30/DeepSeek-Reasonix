@@ -180,13 +180,34 @@ type chatTUI struct {
 	// for /subtask-launched sub-agents, whose tool activity flows to the TUI via a
 	// call context wired to eventCh (there's no real tool call to carry an ID).
 	subtaskSeq int
-	// flowRoots / flowByID hold the current turn's flow tree (main-agent tools,
-	// spawned subtasks, and nested children), rebuilt incrementally from events.
-	// flowOpen toggles the Ctrl+T popup; flowScroll is its line offset.
+	// flowRoots / flowByID hold the current turn's live flow tree (main-agent
+	// tools, spawned subtasks, and nested children), rebuilt incrementally from
+	// events. flowHistory* holds the whole-SESSION subagent tree rebuilt from the
+	// persisted SubagentStore, so the popup shows every subtask the session ever
+	// ran grouped under its caller. flowOpen toggles the Ctrl+T popup; flowScroll
+	// is its line offset.
 	flowRoots  []*flowNode
 	flowByID   map[string]*flowNode
 	flowOpen   bool
 	flowScroll int
+	// flowHistory is the store-backed session tree (roots = subtasks the main
+	// agent spawned); flowHistoryByRef indexes them; flowHistoryCallOwner maps a
+	// caller tool-call ID to the persisted ref it spawned so the live overlay
+	// can skip subagents already captured in history, while flowHistoryCaller
+	// maps a tool-call ID to the subagent transcript that issued it, so nested
+	// runs rebuild under the right parent even on light refreshes.
+	// flowHistoryPrompt / flowHistoryCallLabels cache per-transcript parse
+	// results so a light refresh only re-reads meta files. flowSession* is the
+	// whole-session main agent usage + turn count from the BranchMeta sidecar.
+	flowHistory           []*flowNode
+	flowHistoryByRef      map[string]*flowNode
+	flowHistoryCallOwner  map[string]string
+	flowHistoryCaller     map[string]string
+	flowHistoryPrompt     map[string]string
+	flowHistoryCallLabels map[string]string
+	flowSessionMain       *provider.Usage
+	flowSessionMainCost   float64
+	flowSessionTurns      int
 	// flowMain* accumulate ONLY the main agent's own Usage events (ParentID == "",
 	// i.e. executor + planner), so the "main agent" line reflects its own spend.
 	flowMainTokens     int
@@ -195,14 +216,6 @@ type chatTUI struct {
 	flowMainCompletion int
 	flowMainReasoning  int
 	flowMainCost       float64
-	// flowTotal* accumulate every Usage event (main agent + all subagents) this
-	// turn, backing the separate "total (all agents)" line in the flow popup.
-	flowTotalTokens     int
-	flowTotalCacheHit   int
-	flowTotalCacheMiss  int
-	flowTotalCompletion int
-	flowTotalReasoning  int
-	flowTotalCost       float64
 	// toolStreamStart / toolStreamFrame drive the "⎿ working · Ns" line shown
 	// under a dispatched tool that hasn't produced output yet, so a slow tool
 	// reads as making progress rather than frozen.
@@ -1280,11 +1293,17 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.toggleVerboseReasoning(m.state != tuiRunning)
 			return m, finalize(m, cmds)
 		case "ctrl+t":
-			// Live flow popup: main agent → subtasks → nested children. Toggles
-			// open/closed; read-only, so it never cancels a running turn. Esc also
-			// closes it.
+			// Session flow popup: whole-session subagent history from the
+			// persisted store + the current turn's live overlay on top of it.
+			// Toggles open/closed; read-only, so it never cancels a running turn.
+			// Esc also closes it.
 			m.flowOpen = !m.flowOpen
 			m.flowScroll = 0
+			if m.flowOpen {
+				// Light refresh: catches up subagents that finished since the turn
+				// started (or runs spawned by /subtask) without a full re-parse.
+				m.flowLoadHistory(false)
+			}
 			return m, finalize(m, cmds)
 		case "ctrl+shift+m":
 			m.mouseDisabled = !m.mouseDisabled

@@ -1,16 +1,24 @@
-// Flow popup: a live, hotkey-visible tree of the current turn's agent flow.
-// The main agent's tool calls form the roots; spawned sub-agents (task,
-// run_skill and the wrapper research tools) become nested subtask nodes, and
-// any deeper sub-agent's calls hang off its parent call via ParentID. Phase
-// events mark planner→executor boundaries. It is rebuilt incrementally from the
-// same event stream the rest of the TUI renders, so opening it never disturbs a
-// running turn.
+// Flow popup: a hotkey-visible tree of the session's agent flow.
+//
+// Two layers feed it. The whole-SESSION history tree is rebuilt from the
+// persisted SubagentStore (agent.ListSubagentsByParent), so every sub-agent the
+// conversation has ever spawned — across turns and restarts — is shown, grouped
+// under the subagent that called it (model-driven task calls, /subtask runs and
+// runAs=subagent skills all persist a transcript). On top of that, the live
+// event stream keeps the CURRENT turn's tree in m.flowRoots so in-flight
+// subagents animate (status glyph, streaming usage); nodes whose spawn already
+// landed in the store are deduplicated away from the overlay. It is rebuilt
+// incrementally from the same event stream the rest of the TUI renders, so
+// opening it never disturbs a running turn.
 package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/event"
 	"reasonix/internal/i18n"
 	"reasonix/internal/provider"
@@ -34,7 +42,8 @@ const (
 	flowTool                        // an ordinary tool call
 )
 
-// flowNode is one entry in the flow tree. Children are in dispatch order.
+// flowNode is one entry in the flow tree. Children are in dispatch order; for
+// store-backed history nodes, created orders siblings chronologically.
 type flowNode struct {
 	id         string
 	parentID   string
@@ -46,6 +55,7 @@ type flowNode struct {
 	durationMs int64
 	usage      *provider.Usage
 	cost       float64 // estimated USD spend for this node's Usage events
+	created    time.Time
 	children   []*flowNode
 }
 
@@ -59,8 +69,9 @@ func isSubagentTool(name string) bool {
 	return false
 }
 
-// flowReset clears the per-turn flow tree. Called on each TurnStarted so every
-// user turn gets its own flow view.
+// flowReset clears the per-turn live flow tree (the overlay on top of the
+// persisted session history). Called on each TurnStarted so the current turn
+// starts clean while flowHistory keeps the whole session.
 func (m *chatTUI) flowReset() {
 	m.flowRoots = m.flowRoots[:0]
 	m.flowByID = map[string]*flowNode{}
@@ -71,12 +82,313 @@ func (m *chatTUI) flowReset() {
 	m.flowMainCompletion = 0
 	m.flowMainReasoning = 0
 	m.flowMainCost = 0
-	m.flowTotalTokens = 0
-	m.flowTotalCacheHit = 0
-	m.flowTotalCacheMiss = 0
-	m.flowTotalCompletion = 0
-	m.flowTotalReasoning = 0
-	m.flowTotalCost = 0
+}
+
+// flowHistoryByID lazily initialises the whole-session history maps.
+func (m *chatTUI) flowHistoryByID() {
+	if m.flowHistoryByRef == nil {
+		m.flowHistoryByRef = map[string]*flowNode{}
+	}
+	if m.flowHistoryCallOwner == nil {
+		m.flowHistoryCallOwner = map[string]string{}
+	}
+	if m.flowHistoryPrompt == nil {
+		m.flowHistoryPrompt = map[string]string{}
+	}
+	if m.flowHistoryCallLabels == nil {
+		m.flowHistoryCallLabels = map[string]string{}
+	}
+	if m.flowHistoryCaller == nil {
+		m.flowHistoryCaller = map[string]string{}
+	}
+}
+
+// flowLoadHistory rebuilds the whole-session subagent tree from the persisted
+// SubagentStore, so the flow popup shows every sub-agent the session spawned
+// across turns and restarts, grouped under the subagent that called it (the main
+// agent at the root). group=full re-parses every transcript and refreshes the
+// whole-session main-agent usage/turn count from the session's BranchMeta
+// sidecar; group=false is a light refresh that re-reads the (cheap) meta files
+// for known refs and only parses transcripts for newly-seen ones. Sessions with
+// persistence disabled leave the history empty.
+func (m *chatTUI) flowLoadHistory(full bool) {
+	m.flowHistoryByID()
+	if m.ctrl == nil || m.ctrl.SessionDir() == "" || m.ctrl.SessionPath() == "" {
+		m.flowHistory = m.flowHistory[:0]
+		m.flowHistoryCallOwner = map[string]string{}
+		return
+	}
+	if full {
+		m.flowHistoryPrompt = map[string]string{}
+		m.flowHistoryCallLabels = map[string]string{}
+	}
+	parent := agent.BranchID(m.ctrl.SessionPath())
+	artifacts, err := agent.ListSubagentsByParent(m.ctrl.SessionDir(), parent)
+	if err != nil {
+		// Keep whatever history we already hold rather than blanking it on a
+		// transient read error.
+		return
+	}
+
+// Pass 1: index the main transcript's tool calls so top-level ownership and
+	// labels resolve. Subagent transcripts were already indexed when first seen;
+	// continuations re-parse only on a full refresh.
+	m.flowHistoryCaller = map[string]string{}
+	labels := m.flowHistoryCallLabels
+	if full {
+		for _, msg := range m.ctrl.History() {
+			indexToolCalls(msg.ToolCalls, labels)
+			for _, tc := range msg.ToolCalls {
+				if tc.ID != "" {
+					m.flowHistoryCaller[tc.ID] = "" // main agent called it
+				}
+			}
+		}
+	}
+
+	// Pass 2: (re)parse transcripts — on a full refresh every transcript (they
+	// can grow via continuation), otherwise only refs this process has not seen
+	// yet — recording each run's opening prompt for label fallbacks and its
+	// tool-call IDs so nested runs resolve under the subagent that issued them.
+	// Parsing runs before node building so every transcript's call labels are
+	// indexed regardless of directory order.
+	byRef := map[string]*flowNode{}
+	owner := map[string]string{} // caller tool-call ID -> subagent ref spawned by it
+	for i := range artifacts {
+		art := artifacts[i]
+		ref := art.Ref
+		known := m.flowHistoryByRef[ref]
+		if known != nil && !full {
+			continue
+		}
+		prompt := m.flowHistoryPrompt[ref]
+		if full {
+			m.flowHistoryPrompt[ref] = ""
+			m.flowHistoryByRef[ref] = nil
+		}
+		if sess, lerr := agent.LoadSession(art.SessionPath); lerr == nil {
+			prompt = firstUserPrompt(sess, prompt)
+			for _, msg := range sess.Messages {
+				for _, tc := range msg.ToolCalls {
+					if tc.ID != "" && m.flowHistoryCallLabels[tc.ID] == "" {
+						m.flowHistoryCallLabels[tc.ID] = flowLabelFor(tc.Name, tc.Arguments)
+					}
+					if tc.ID != "" {
+						if _, taken := m.flowHistoryCaller[tc.ID]; !taken {
+							m.flowHistoryCaller[tc.ID] = ref // this subagent called it
+						}
+					}
+				}
+			}
+		}
+		m.flowHistoryPrompt[ref] = prompt
+	}
+	for i := range artifacts {
+		art := artifacts[i]
+		ref := art.Ref
+		if known := m.flowHistoryByRef[ref]; known != nil {
+			flowApplyMeta(known, art.Meta)
+		} else {
+			m.flowHistoryByRef[ref] = flowNodeFromArtifact(art, m.flowHistoryCallLabels, m.flowHistoryPrompt[ref])
+		}
+		byRef[ref] = m.flowHistoryByRef[ref]
+		owner[strings.TrimSpace(art.Meta.ParentToolCallID)] = ref
+	}
+
+	// Pass 3: link children under the subagent whose transcript contains their
+	// caller tool-call ID; runs called by the main agent (or with an unknown
+	// caller, e.g. /subtask synthetic IDs, or a run resumed into a new owner)
+	// hang off the main agent root.
+	var roots []*flowNode
+	for _, ref := range sortedRefs(byRef) {
+		node := byRef[ref]
+		caller := m.flowHistoryCaller[node.parentID]
+		switch {
+		case caller == "" || caller == ref:
+			roots = append(roots, node)
+		case byRef[caller] != nil:
+			byRef[caller].children = append(byRef[caller].children, node)
+		default:
+			roots = append(roots, node)
+		}
+	}
+	sortByCreated(roots)
+	for _, n := range byRef {
+		sortByCreated(n.children)
+	}
+	m.flowHistory = roots
+	m.flowHistoryCallOwner = owner
+
+	// Whole-session main-agent usage + turn count come from the BranchMeta
+	// sidecar, which the controller saves after each turn (main agent's own
+	// cumulative spend; subagent spend is kept in the SubagentStore instead).
+	m.flowSessionMain = nil
+	m.flowSessionMainCost = 0
+	m.flowSessionTurns = 0
+	if meta, ok, _ := agent.LoadBranchMeta(m.ctrl.SessionPath()); ok {
+		m.flowSessionTurns = meta.Turns
+		if u := meta.SessionUsage; u != nil {
+			m.flowSessionMain = &provider.Usage{
+				PromptTokens:     u.PromptTokens,
+				CompletionTokens: u.CompletionTokens,
+				TotalTokens:      u.TotalTokens,
+				CacheHitTokens:   u.CacheHitTokens,
+				CacheMissTokens:  u.CacheMissTokens,
+				ReasoningTokens:  u.ReasoningTokens,
+			}
+			m.flowSessionMainCost = u.Cost
+		}
+	}
+}
+
+// indexToolCalls records the label for each tool call in a transcript.
+func indexToolCalls(calls []provider.ToolCall, labels map[string]string) {
+	for _, tc := range calls {
+		if tc.ID == "" || labels[tc.ID] != "" {
+			continue
+		}
+		labels[tc.ID] = flowLabelFor(tc.Name, tc.Arguments)
+	}
+}
+
+// flowLabelFor mirrors the live-tree node label for a tool call so persisted
+// subagent nodes read the same ("Task(Locate tests)", "explore(find X)"…).
+func flowLabelFor(name, args string) string {
+	if arg := toolArg(name, args); arg != "" {
+		return flowLabel(event.Tool{Name: name, Args: args})
+	}
+	return toolDisplayName(name)
+}
+
+// firstUserPrompt returns the run's opening user message (used as the label
+// fallback when a subagent run carries no description, e.g. /subtask), preferring
+// an already-known one when a session lacks user messages.
+func firstUserPrompt(sess *agent.Session, fallback string) string {
+	if strings.TrimSpace(fallback) != "" {
+		return fallback
+	}
+	if sess == nil {
+		return fallback
+	}
+	for _, msg := range sess.Messages {
+		if msg.Role == provider.RoleUser && strings.TrimSpace(msg.Content) != "" &&
+			msg.Content != agent.InterruptedTurnContinueMessage {
+			return strings.TrimSpace(msg.Content)
+		}
+	}
+	return fallback
+}
+
+// flowNodeFromArtifact builds a flow popup node from a persisted subagent run.
+func flowNodeFromArtifact(art agent.SubagentArtifact, labels map[string]string, prompt string) *flowNode {
+	meta := art.Meta
+	n := &flowNode{
+		id:       meta.Ref,
+		parentID: strings.TrimSpace(meta.ParentToolCallID),
+		kind:     flowSubtask,
+		status:   flowStatusFromSubagent(meta.Status),
+		model:    meta.Model,
+		effort:   meta.Effort,
+		created:  meta.CreatedAt,
+	}
+	if d := labels[meta.ParentToolCallID]; d != "" {
+		n.label = d
+	} else {
+		// The persisted run has no description of its own, so fall back to a
+		// generic verb + the run's opening prompt.
+		n.label = flowStoreLabel(meta.Name, meta.Kind, prompt)
+	}
+	if u := meta.Usage; u != nil {
+		n.usage = &provider.Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+			CacheHitTokens:   u.CacheHitTokens,
+			CacheMissTokens:  u.CacheMissTokens,
+			ReasoningTokens:  u.ReasoningTokens,
+		}
+		n.cost = u.Cost
+	}
+	if t := meta.UpdatedAt; t.After(meta.CreatedAt) && !meta.CreatedAt.IsZero() {
+		n.durationMs = t.Sub(meta.CreatedAt).Milliseconds()
+	}
+	return n
+}
+
+// flowStoreLabel is the persisted-run fallback label ("Task(desc)", "explore(desc)").
+func flowStoreLabel(name, kind, prompt string) string {
+	verb := name
+	if kind == "task" {
+		verb = "Task"
+	}
+	if p := clampPlain(strings.TrimSpace(prompt), 60); p != "" {
+		return verb + "(" + p + ")"
+	}
+	return verb
+}
+
+// flowApplyMeta folds a (possibly refreshed) SubagentMeta into an existing
+// history node: status, cumulative usage, duration, model/effort.
+func flowApplyMeta(n *flowNode, meta agent.SubagentMeta) {
+	n.status = flowStatusFromSubagent(meta.Status)
+	if u := meta.Usage; u != nil {
+		n.usage = &provider.Usage{
+			PromptTokens:     u.PromptTokens,
+			CompletionTokens: u.CompletionTokens,
+			TotalTokens:      u.TotalTokens,
+			CacheHitTokens:   u.CacheHitTokens,
+			CacheMissTokens:  u.CacheMissTokens,
+			ReasoningTokens:  u.ReasoningTokens,
+		}
+		n.cost = u.Cost
+	}
+	if meta.Model != "" {
+		n.model = meta.Model
+	}
+	if meta.Effort != "" {
+		n.effort = meta.Effort
+	}
+	if t := meta.UpdatedAt; t.After(meta.CreatedAt) && !meta.CreatedAt.IsZero() {
+		n.durationMs = t.Sub(meta.CreatedAt).Milliseconds()
+	}
+}
+
+// flowStatusFromSubagent maps a persisted run status onto the live flow status.
+func flowStatusFromSubagent(s agent.SubagentStatus) flowStatus {
+	switch s {
+	case agent.SubagentCompleted:
+		return flowCompleted
+	case agent.SubagentRunning:
+		return flowRunning
+	default: // failed, interrupted, unknown
+		return flowFailed
+	}
+}
+
+// sortedRefs returns the node refs in stable (creation-time) order.
+func sortedRefs(nodes map[string]*flowNode) []string {
+	refs := make([]string, 0, len(nodes))
+	for ref := range nodes {
+		refs = append(refs, ref)
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		a, b := nodes[refs[i]].created, nodes[refs[j]].created
+		if a.Equal(b) {
+			return refs[i] < refs[j]
+		}
+		return a.Before(b)
+	})
+	return refs
+}
+
+func sortByCreated(nodes []*flowNode) {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		a, b := nodes[i].created, nodes[j].created
+		if a.Equal(b) {
+			return nodes[i].id < nodes[j].id
+		}
+		return a.Before(b)
+	})
 }
 
 // flowApply folds one agent event into the flow tree. It is a no-op for kinds
@@ -89,6 +401,10 @@ func (m *chatTUI) flowApply(e event.Event) {
 	switch e.Kind {
 	case event.TurnStarted:
 		m.flowReset()
+		// A new user turn opens with the whole-session history seeded from the
+		// persisted subagent store; the live overlay below re-accumulates as the
+		// turn's events arrive.
+		m.flowLoadHistory(true)
 	case event.ToolDispatch:
 		if e.Tool.Partial {
 			return
@@ -96,17 +412,13 @@ func (m *chatTUI) flowApply(e event.Event) {
 		m.flowDispatch(e.Tool)
 	case event.ToolResult:
 		m.flowResult(e.Tool)
+		// A just-finished sub-agent lands a completed transcript in the store, so
+		// its history node (status/usage) catches up while the popup is open.
+		if m.flowOpen && isSubagentTool(e.Tool.Name) {
+			m.flowLoadHistory(false)
+		}
 	case event.Usage:
 		if e.Usage != nil {
-			// Whole-turn total: every event (main agent + all subagents).
-			m.flowTotalTokens += e.Usage.TotalTokens
-			m.flowTotalCacheHit += e.Usage.CacheHitTokens
-			m.flowTotalCacheMiss += e.Usage.CacheMissTokens
-			m.flowTotalCompletion += e.Usage.CompletionTokens
-			m.flowTotalReasoning += e.Usage.ReasoningTokens
-			if e.Pricing != nil {
-				m.flowTotalCost += e.Pricing.Cost(e.Usage)
-			}
 			if e.ParentID == "" {
 				// Main agent's own spend (executor + planner are top-level).
 				m.flowMainTokens += e.Usage.TotalTokens
@@ -238,33 +550,38 @@ const flowMaxDepth = 24
 
 // renderFlow draws the flow popup panel, or "" when it is not open so callers
 // (bottomRows, View) treat it as absent. A synthetic "main agent" root anchors
-// the tree; only its subagent/orchestrator descendants are listed (see
-// flowLines). Scrolling is clamped against the rendered line count here, so the
-// scroll offset always lands on a real line.
+// the tree; its subtask descendants come from the whole-session history
+// (persisted SubagentStore) plus the current turn's live overlay (see
+// flowSessionLines). Scrolling is clamped against the rendered line count here,
+// so the scroll offset always lands on a real line.
 func (m *chatTUI) renderFlow() string {
 	if !m.flowOpen {
 		return ""
 	}
 	w := max(m.width, 10)
 	var b strings.Builder
-	b.WriteString(accent(i18n.M.FlowTitle) + "\n")
+	title := accent(i18n.M.FlowTitle)
+	if m.flowSessionTurns > 0 {
+		title += dim(" · " + fmt.Sprintf(i18n.M.FlowTurnsFmt, m.flowSessionTurns))
+	}
+	b.WriteString(title + "\n")
+
+	// Main agent: the BranchMeta sidecar's cumulative spend across the session,
+	// reconciled with the live per-turn accumulator. The live counter is the very
+	// same accumulation the snapshot was written from — only later — so when it
+	// has outrun the snapshot it is simply the newer truth, not something to add
+	// on top. This keeps exactly one figure per line (no doubling-looking hints).
+	mainUsage, mainCost := m.flowMainSessionUsage()
 	root := bold(i18n.M.FlowMainAgent)
 	if mr := m.modelRef; mr != "" {
 		root += dim(" · " + mr)
 	}
-	if m.flowMainTokens > 0 {
-		agg := &provider.Usage{
-			TotalTokens:      m.flowMainTokens,
-			PromptTokens:     m.flowMainCacheHit + m.flowMainCacheMiss,
-			CacheHitTokens:   m.flowMainCacheHit,
-			CacheMissTokens:  m.flowMainCacheMiss,
-			CompletionTokens: m.flowMainCompletion,
-			ReasoningTokens:  m.flowMainReasoning,
-		}
-		root += " · " + flowUsageLine(agg, m.flowMainCost)
+	if mainUsage != nil && mainUsage.TotalTokens > 0 {
+		root += " · " + flowUsageLine(mainUsage, mainCost)
 	}
 	b.WriteString(root + "\n")
-	lines := m.flowLines(m.flowRoots, 1)
+
+	lines := m.flowSessionLines()
 	if len(lines) == 0 {
 		b.WriteString(dim("  "+i18n.M.FlowEmpty) + "\n")
 	} else {
@@ -275,20 +592,126 @@ func (m *chatTUI) renderFlow() string {
 			b.WriteString(clampPlain(ln, w-2) + "\n")
 		}
 	}
-	// Whole-turn total across all agents.
-	if m.flowTotalTokens > 0 {
-		agg := &provider.Usage{
-			TotalTokens:      m.flowTotalTokens,
-			PromptTokens:     m.flowTotalCacheHit + m.flowTotalCacheMiss,
-			CacheHitTokens:   m.flowTotalCacheHit,
-			CacheMissTokens:  m.flowTotalCacheMiss,
-			CompletionTokens: m.flowTotalCompletion,
-			ReasoningTokens:  m.flowTotalReasoning,
-		}
-		b.WriteString(dim(i18n.M.FlowTotalAll) + " · " + flowUsageLine(agg, m.flowTotalCost) + "\n")
+
+	// Subagent spend across the whole session (persisted runs + live in-flight),
+	// then the grand total across all agents. Each line is additive, so the
+	// numbers always reconcile instead of drifting when history and live sources
+	// disagree.
+	subUsage, subCost := m.flowSubagentSessionUsage()
+	if subUsage != nil && subUsage.TotalTokens > 0 {
+		b.WriteString(dim(i18n.M.FlowSubagentAll) + " · " + flowUsageLine(subUsage, subCost) + "\n")
+	}
+	if totalUsage, totalCost := flowAddUsage(mainUsage, mainCost, subUsage, subCost); totalUsage.TotalTokens > 0 {
+		b.WriteString(dim(i18n.M.FlowTotalAll) + " · " + flowUsageLine(totalUsage, totalCost) + "\n")
 	}
 	b.WriteString(dim(i18n.M.FlowHint))
 	return choicePanelStyle.Width(w).Render(strings.TrimRight(b.String(), "\n"))
+}
+
+// flowMainSessionUsage returns the whole-session main-agent spend. The BranchMeta
+// sidecar is authoritative across resumes; the live per-turn accumulator (the
+// same counter, a few seconds newer) takes over when it has moved past the last
+// snapshot — a fresh session mid-first-turn, or an in-flight turn past the last
+// auto-save. One source is always returned, never a sum.
+func (m *chatTUI) flowMainSessionUsage() (*provider.Usage, float64) {
+	live := &provider.Usage{
+		TotalTokens:      m.flowMainTokens,
+		PromptTokens:     m.flowMainCacheHit + m.flowMainCacheMiss,
+		CacheHitTokens:   m.flowMainCacheHit,
+		CacheMissTokens:  m.flowMainCacheMiss,
+		CompletionTokens: m.flowMainCompletion,
+		ReasoningTokens:  m.flowMainReasoning,
+	}
+	if m.flowSessionMain != nil {
+		// Sidecar is at least as fresh as the live counter → it's the number.
+		if m.flowMainTokens <= 0 || m.flowMainTokens <= m.flowSessionMain.TotalTokens {
+			return m.flowSessionMain, m.flowSessionMainCost
+		}
+		// Live has moved past the snapshot → it is the number (not a sum).
+		if live.TotalTokens > 0 {
+			return live, m.flowMainCost
+		}
+		return m.flowSessionMain, m.flowSessionMainCost
+	}
+	if live.TotalTokens <= 0 {
+		return nil, 0
+	}
+	return live, m.flowMainCost
+}
+
+// flowSubagentSessionUsage sums every subagent node's spend — the persisted
+// history tree plus the live overlay subagents still in flight — so the
+// "subagents" line is always the union of both sources with no double count.
+func (m *chatTUI) flowSubagentSessionUsage() (*provider.Usage, float64) {
+	out := &provider.Usage{}
+	var cost float64
+	var walk func([]*flowNode)
+	walk = func(nodes []*flowNode) {
+		for _, n := range nodes {
+			if n.usage != nil {
+				out = addUsage(out, n.usage)
+			}
+			cost += n.cost
+			walk(n.children)
+		}
+	}
+	walk(m.flowHistory)
+	walk(m.flowOverlayRoots())
+	if out.TotalTokens == 0 {
+		return nil, float64(cost)
+	}
+	return out, float64(cost)
+}
+
+// flowAddUsage folds two usage records together (addition only — never a
+// subtraction, so cross-source totals cannot go negative or absurdly large).
+func flowAddUsage(a *provider.Usage, aCost float64, b *provider.Usage, bCost float64) (*provider.Usage, float64) {
+	if a == nil {
+		a = &provider.Usage{}
+	}
+	if b == nil {
+		b = &provider.Usage{}
+	}
+	out := &provider.Usage{}
+	out = addUsage(out, a)
+	out = addUsage(out, b)
+	return out, aCost + bCost
+}
+
+// flowSessionLines renders the whole-session subagent tree: the persisted
+// history first, then the current turn's live-overlay subagents that have not
+// yet persisted a transcript (so in-flight runs animate without duplicating the
+// ones history already shows).
+func (m *chatTUI) flowSessionLines() []string {
+	lines := m.flowLines(m.flowHistory, 1)
+	overlay := m.flowOverlayRoots()
+	if len(overlay) > 0 {
+		lines = append(lines, m.flowLines(overlay, 1)...)
+	}
+	return lines
+}
+
+// flowOverlayRoots returns the live current-turn subtask nodes whose spawn is
+// not yet captured by a persisted history node, so they animate (status glyph,
+// running spinner, streaming usage) without duplicating history-covered ones.
+func (m *chatTUI) flowOverlayRoots() []*flowNode {
+	var out []*flowNode
+	var walk func([]*flowNode)
+	walk = func(nodes []*flowNode) {
+		for _, n := range nodes {
+			if n.kind != flowSubtask {
+				walk(n.children)
+				continue
+			}
+			if _, ok := m.flowHistoryCallOwner[n.id]; ok {
+				walk(n.children)
+				continue
+			}
+			out = append(out, n)
+		}
+	}
+	walk(m.flowRoots)
+	return out
 }
 
 // flowLines flattens the tree into display lines, depth-first, honouring the
