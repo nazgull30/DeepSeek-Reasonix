@@ -125,7 +125,7 @@ func (c *Controller) Compose(text string) string {
 	// Background jobs that finished since the last turn ride the turn too, so the
 	// model learns of completions even though the user-facing notices don't reach
 	// its context. Like memory, this never touches the cache-stable prefix.
-	if c.jobs != nil {
+	if c.jobs != nil && !c.disableJobsNote {
 		if note := c.jobs.DrainCompletedNoteForSession(c.parentSessionID()); note != "" {
 			text = "<background-jobs>\n" + note + "\n</background-jobs>\n\n" + text
 		}

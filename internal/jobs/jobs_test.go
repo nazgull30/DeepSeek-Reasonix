@@ -84,8 +84,8 @@ func TestStalledWarningIgnoresReturnedJobBeforeTerminalStatusPublished(t *testin
 	if strings.Contains(note, "may be stalled") {
 		t.Fatalf("got false stalled warning for already-returned job %s: %q", j.ID, note)
 	}
-	if !strings.Contains(note, j.ID) || !strings.Contains(note, string(Done)) {
-		t.Fatalf("completion note = %q, want done update for %s", note, j.ID)
+	if !strings.Contains(note, "changed state") {
+		t.Fatalf("completion note = %q, want a completion update for %s", note, j.ID)
 	}
 }
 
@@ -107,8 +107,8 @@ func TestStartWaitDoneAndDrain(t *testing.T) {
 		t.Errorf("output = %q, want it to contain hello", res[0].Output)
 	}
 	note := m.DrainCompletedNote()
-	if !strings.Contains(note, j.ID) {
-		t.Errorf("note = %q, want it to mention %s", note, j.ID)
+	if !strings.Contains(note, "changed state") {
+		t.Errorf("note = %q, want a completion update for %s", note, j.ID)
 	}
 	if again := m.DrainCompletedNote(); again != "" {
 		t.Errorf("second drain = %q, want empty", again)
@@ -213,7 +213,7 @@ func TestStalledWarningEmitsNoticeAndDrainNote(t *testing.T) {
 		t.Fatalf("stalled job output status = %q ok=%v, want running", st, ok)
 	}
 	note := m.DrainCompletedNote()
-	if !strings.Contains(note, "may be stalled") || !strings.Contains(note, j.ID) {
+	if !strings.Contains(note, "may be stalled") {
 		t.Fatalf("stalled drain note = %q, want stalled update for %s", note, j.ID)
 	}
 	// The warning is once per job.
@@ -335,14 +335,14 @@ func TestSessionScopedOperations(t *testing.T) {
 	if note := m.DrainCompletedNoteForSession("session-b"); note != "" {
 		t.Fatalf("session-b drain before completion = %q, want empty", note)
 	}
-	if note := m.DrainCompletedNoteForSession("session-a"); !strings.Contains(note, a.ID) {
-		t.Fatalf("session-a drain = %q, want %s", note, a.ID)
+	if note := m.DrainCompletedNoteForSession("session-a"); !strings.Contains(note, "changed state") {
+		t.Fatalf("session-a drain = %q, want a completion update for %s", note, a.ID)
 	}
 
 	close(releaseB)
 	m.WaitForSession(context.Background(), "session-b", []string{b.ID}, 5)
-	if note := m.DrainCompletedNoteForSession("session-b"); !strings.Contains(note, b.ID) {
-		t.Fatalf("session-b drain = %q, want %s", note, b.ID)
+	if note := m.DrainCompletedNoteForSession("session-b"); !strings.Contains(note, "changed state") {
+		t.Fatalf("session-b drain = %q, want a completion update for %s", note, b.ID)
 	}
 }
 
@@ -562,5 +562,39 @@ func TestCloseWithGraceTimesOutForNonCooperativeJob(t *testing.T) {
 	res := m.Wait(context.Background(), []string{j.ID}, 5)
 	if len(res) != 1 || res[0].Status != Killed {
 		t.Fatalf("want killed after delayed close cleanup, got %+v", res)
+	}
+}
+
+// DrainCompletedNoteForSession must emit a byte-constant body so the composed
+// user-message prefix stays stable and the provider prompt cache stays hot,
+// even as the concrete job IDs shuffle between turns. The per-job id/label/status
+// text is model-visible context only through the closing Notice, not the note.
+func TestDrainNoteBodyByteStable(t *testing.T) {
+	m := NewManager(event.Discard)
+	defer m.Close()
+
+	notes := make(map[string]int)
+	for i := 0; i < 8; i++ {
+		// Complete a fresh job whose ID changes every iteration; the drained body
+		// must not leak the varying ID/label/status into the composed turn prefix.
+		j := m.Start("bash", "echo", func(_ context.Context, out io.Writer) (string, error) {
+			io.WriteString(out, "payload\n")
+			return "done", nil
+		})
+		res := m.Wait(context.Background(), []string{j.ID}, 5)
+		if len(res) != 1 || res[0].Status != Done {
+			t.Fatalf("wait %d = %+v, want Done", i, res)
+		}
+		note := m.DrainCompletedNote()
+		if note == "" {
+			t.Fatalf("note empty on iteration %d", i)
+		}
+		if strings.Contains(note, j.ID) {
+			t.Fatalf("note leaks job id %s: %q", j.ID, note)
+		}
+		notes[note]++
+	}
+	if len(notes) != 1 {
+		t.Fatalf("note body is not byte-stable: got %d distinct bodies, want 1", len(notes))
 	}
 }

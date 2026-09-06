@@ -683,7 +683,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithParentMessages(func() []provider.Message { return execSess.Snapshot() }).
-			WithParentResultState(func() *agent.ContentReplacementState { return resultState })
+			WithParentResultState(func() *agent.ContentReplacementState { return resultState }).
+			WithTimeBasedCompaction(cfg.Agent.TimeBasedCompactRatio, time.Duration(cfg.Agent.CacheIdleTTLSeconds)*time.Second)
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
 		return "enabled task."
@@ -1018,6 +1019,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		SoftCompactRatio:     cfg.Agent.SoftCompactRatio,
 		CompactRatio:         cfg.Agent.CompactRatio,
 		CompactForceRatio:    cfg.Agent.CompactForceRatio,
+		TimeBasedCompactRatio: cfg.Agent.TimeBasedCompactRatio,
+		CacheIdleTTL:         time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
 		RecentKeep:           cfg.Agent.RecentKeep,
 		ArchiveDir:           config.ArchiveDir(),
 		KeepPolicy:           keepPolicy,
@@ -1054,6 +1057,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
 				CompactRatio:      cfg.Agent.CompactRatio,
 				CompactForceRatio: cfg.Agent.CompactForceRatio,
+				TimeBasedCompactRatio: cfg.Agent.TimeBasedCompactRatio,
+				CacheIdleTTL:         time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
 				RecentKeep:        cfg.Agent.RecentKeep,
 				ArchiveDir:        config.ArchiveDir(),
 				KeepPolicy:        keepPolicy,
@@ -1121,6 +1126,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WorkspaceRoot:          root,
 		AutoPlan:               autoPlanForAgent(cfg.Agent.AutoPlan, opts.AgentName),
 		ReasoningLanguage:      cfg.ReasoningLanguage(),
+		DisableJobsNote:        cfg.Agent.DisableJobsNote,
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
 		Shell:                  shell,
 		PlanModeAllowedTools:   cfg.Agent.PlanModeAllowedTools,

@@ -206,6 +206,18 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	fmt.Fprintf(&b, "soft_compact_ratio  = %s   # notice only; keeps cache-first prefix intact\n", formatFloat(c.Agent.SoftCompactRatio))
 	fmt.Fprintf(&b, "compact_ratio       = %s   # try compacting when prompt reaches this fraction\n", formatFloat(c.Agent.CompactRatio))
 	fmt.Fprintf(&b, "compact_force_ratio = %s   # force compacting at this high-water mark\n", formatFloat(c.Agent.CompactForceRatio))
+	if c.Agent.TimeBasedCompactRatio > 0 {
+		fmt.Fprintf(&b, "time_based_compact_ratio = %s   # idle micro-compaction trigger; > 0 enables it (e.g. 0.35)\n", formatFloat(c.Agent.TimeBasedCompactRatio))
+		ttl := c.Agent.CacheIdleTTLSeconds
+		if ttl <= 0 {
+			ttl = 300
+		}
+		fmt.Fprintf(&b, "cache_idle_ttl_seconds  = %d   # idle window after which the prompt cache is considered expired\n", ttl)
+	} else {
+		b.WriteString("# time_based_compact_ratio = 0.35   # idle micro-compaction trigger; > 0 enables it\n")
+		b.WriteString("# cache_idle_ttl_seconds  = 300   # idle window after which the prompt cache is considered expired\n")
+	}
+	fmt.Fprintf(&b, "disable_jobs_note   = %v   # suppress the injected <background-jobs> turn note\n", c.Agent.DisableJobsNote)
 	if c.Agent.Keep != nil {
 		fmt.Fprintf(&b, "keep                = %s   # compaction keep policy: errors, user_marked\n", renderStringArray(c.Agent.Keep))
 	} else {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/instruction"
@@ -142,6 +143,8 @@ type TaskTool struct {
 	softCompactRatio  float64
 	compactRatio      float64
 	compactForceRatio float64
+	timeBasedRatio    float64
+	cacheIdleTTL      time.Duration
 	recentKeep        int
 	temperature       float64
 	archiveDir        string
@@ -202,6 +205,16 @@ func NewTaskTool(prov provider.Provider, pricing *provider.Pricing, parentReg *t
 		resolveProvider:   resolveProvider,
 		projectChecks:     append([]instruction.VerifyCheck(nil), projectChecks...),
 	}
+}
+
+// WithTimeBasedCompaction enables idle-time micro-compaction for sub-agents that
+// follow the affordances TimeBasedCompactRatio / CacheIdleTTL.
+func (t *TaskTool) WithTimeBasedCompaction(ratio float64, idleTTL time.Duration) *TaskTool {
+	if ratio > 0 {
+		t.timeBasedRatio = ratio
+		t.cacheIdleTTL = idleTTL
+	}
+	return t
 }
 
 // WithTranscripts enables persisted sub-agent transcript continuation for this
@@ -624,6 +637,8 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		SoftCompactRatio:  t.softCompactRatio,
 		CompactRatio:      t.compactRatio,
 		CompactForceRatio: t.compactForceRatio,
+		TimeBasedCompactRatio: t.timeBasedRatio,
+		CacheIdleTTL:         t.cacheIdleTTL,
 		ArchiveDir:        t.archiveDir,
 		KeepPolicy:        t.keepPolicy,
 		ReasoningLanguage: ReasoningLanguageFromContext(ctx),

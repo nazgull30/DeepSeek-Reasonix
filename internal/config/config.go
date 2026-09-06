@@ -330,7 +330,6 @@ func (c *Config) ColdResumePruneEnabled() bool {
 	}
 	return *c.Agent.ColdResumePrune
 }
-
 // ReasoningLanguage normalizes agent.reasoning_language. Empty means auto:
 // visible reasoning follows the conversation language already described by the
 // stable LanguagePolicy. Legacy "default" is treated as auto.
@@ -870,6 +869,21 @@ type AgentConfig struct {
 	SoftCompactRatio  float64 `toml:"soft_compact_ratio"`
 	CompactRatio      float64 `toml:"compact_ratio"`
 	CompactForceRatio float64 `toml:"compact_force_ratio"`
+	// TimeBasedCompactRatio, when > 0, enables time-based (idle) micro-compaction:
+	// after the provider prompt cache has likely expired (agent idle past
+	// CacheIdleTTL) and the prompt exceeds this fraction of the context window, a
+	// compaction runs proactively so the next turn's cache miss re-sends ~RecentKeep
+	// tokens instead of the whole hot prefix. 0 disables it (default). A typical
+	// value is 0.35 (35% of the window). See CacheIdleTTLSeconds.
+	TimeBasedCompactRatio float64 `toml:"time_based_compact_ratio"`
+	// CacheIdleTTLSeconds is the idle duration after which the provider-side prompt
+	// cache is considered expired, used by time-based micro-compaction. 0 = 5 minutes.
+	CacheIdleTTLSeconds int `toml:"cache_idle_ttl_seconds"`
+	// DisableJobsNote suppresses the controller-injected <background-jobs> block
+	// that folds background-job completion state into the next user turn. Default
+	// false keeps the injection (byte-stable count-only note). Set true to keep the
+	// composed user-message prefix completely stable.
+	DisableJobsNote bool `toml:"disable_jobs_note"`
 	// Keep controls which compactable messages stay verbatim beyond the current
 	// user-fact/digest floor and recent tail. Empty uses the conservative default
 	// of keeping error tool results.

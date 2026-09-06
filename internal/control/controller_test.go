@@ -511,6 +511,127 @@ func TestCancelledTurnThenContinue(t *testing.T) {
 	}
 }
 
+// trimTurnFixture builds a controller whose executor session starts with the
+// given messages, so trimInterruptedTurn can be exercised directly without a
+// runner.
+func trimTurnFixture(t *testing.T, msgs ...provider.Message) (*Controller, *agent.Session) {
+	t.Helper()
+	sess := &agent.Session{Messages: msgs}
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, Label: "test"})
+	return c, sess
+}
+
+func TestTrimInterruptedTurn(t *testing.T) {
+	sys := provider.Message{Role: provider.RoleSystem, Content: "sys"}
+	user := provider.Message{Role: provider.RoleUser, Content: "build the feature"}
+	done := provider.Message{Role: provider.RoleAssistant, Content: "partial work done"}
+	dangling := provider.Message{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "call_1", Name: "bash", Arguments: "{}"}}}
+	toolResult := provider.Message{Role: provider.RoleTool, ToolCallID: "call_1", Name: "bash", Content: "result"}
+	marker := provider.Message{Role: provider.RoleUser, Content: agent.InterruptedTurnContinueMessage}
+
+	t.Run("drops trailing dangling tool call", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user, done, dangling)
+		c.trimInterruptedTurn(1)
+		got := sess.Snapshot()
+		if len(got) != 4 {
+			t.Fatalf("transcript = %+v, want system + user + partial reply + marker", got)
+		}
+		if got[2].Role != provider.RoleAssistant || got[2].Content != "partial work done" {
+			t.Fatalf("partial assistant reply = %+v, want preserved work", got[2])
+		}
+		if got[3].Role != provider.RoleUser || got[3].Content != marker.Content {
+			t.Fatalf("last message = %+v, want continuation marker", got[3])
+		}
+	})
+
+	t.Run("clean interrupt without dangling tool call", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user, done)
+		c.trimInterruptedTurn(1)
+		got := sess.Snapshot()
+		if len(got) != 4 {
+			t.Fatalf("transcript = %+v, want system + user + partial reply + marker", got)
+		}
+		if got[2].Content != "partial work done" {
+			t.Fatalf("partial assistant reply = %+v, want preserved work", got[2])
+		}
+		if got[3].Content != marker.Content {
+			t.Fatalf("last message = %+v, want continuation marker", got[3])
+		}
+	})
+
+	t.Run("turn with only dangling tool calls is untouched", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user, dangling)
+		c.trimInterruptedTurn(2)
+		got := sess.Snapshot()
+		if len(got) != 3 {
+			t.Fatalf("transcript = %+v, want unchanged system + user + dangling call (no marker)", got)
+		}
+		if got[2].Role != provider.RoleAssistant || len(got[2].ToolCalls) != 1 {
+			t.Fatalf("dangling tool call should be left as-is, got %+v", got[2])
+		}
+	})
+
+	t.Run("keeps completed tool pair, trims only trailing dangling call", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user, dangling, toolResult, dangling)
+		c.trimInterruptedTurn(1)
+		got := sess.Snapshot()
+		if len(got) != 5 {
+			t.Fatalf("transcript = %+v, want system + user + completed tool pair + marker", got)
+		}
+		if got[2].Role != provider.RoleAssistant || len(got[2].ToolCalls) != 1 {
+			t.Fatalf("completed tool call should be preserved, got %+v", got[2])
+		}
+		if got[3].Role != provider.RoleTool || got[3].Content != "result" {
+			t.Fatalf("completed tool result should be preserved, got %+v", got[3])
+		}
+		if got[4].Content != marker.Content {
+			t.Fatalf("last message = %+v, want continuation marker", got[4])
+		}
+	})
+
+	t.Run("idx at end of history is a no-op", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user)
+		c.trimInterruptedTurn(2)
+		got := sess.Snapshot()
+		if len(got) != 2 {
+			t.Fatalf("transcript = %+v, want unchanged system + user (no marker)", got)
+		}
+	})
+
+	t.Run("idx past end of history is a no-op", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user)
+		c.trimInterruptedTurn(99)
+		got := sess.Snapshot()
+		if len(got) != 2 {
+			t.Fatalf("transcript = %+v, want unchanged system + user (no marker)", got)
+		}
+	})
+
+	t.Run("preserves prefix verbatim when mid-history", func(t *testing.T) {
+		c, sess := trimTurnFixture(t, sys, user, done, provider.Message{Role: provider.RoleUser, Content: "follow-up"}, dangling)
+		c.trimInterruptedTurn(2)
+		got := sess.Snapshot()
+		if len(got) != 5 {
+			t.Fatalf("transcript = %+v, want system + user + partial reply + follow-up + marker", got)
+		}
+		if got[2].Content != "partial work done" {
+			t.Fatalf("pre-index work should be preserved verbatim, got %+v", got[2])
+		}
+		if got[3].Role != provider.RoleUser || got[3].Content != "follow-up" {
+			t.Fatalf("mid-history user turn should be preserved verbatim, got %+v", got[3])
+		}
+		if got[4].Content != marker.Content {
+			t.Fatalf("last message = %+v, want continuation marker", got[4])
+		}
+	})
+
+	t.Run("nil executor is a no-op", func(t *testing.T) {
+		c := New(Options{Label: "test"})
+		c.trimInterruptedTurn(0) // must not panic
+	})
+}
+
 func TestRunInjectsParentSessionForJobs(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

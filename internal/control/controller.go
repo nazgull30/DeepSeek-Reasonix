@@ -114,6 +114,10 @@ type Controller struct {
 	// Close cancels its still-running jobs.
 	jobs *jobs.Manager
 
+	// disableJobsNote, when true, skips the <background-jobs> injection in
+	// Compose (see Options.DisableJobsNote).
+	disableJobsNote bool
+
 	// reg is the live tool registry the executor reads each turn; pluginCtx is the
 	// session-scoped context a hot-added stdio server binds its subprocess to.
 	// Together they let AddMCPServer connect a server mid-session and have its tools
@@ -318,6 +322,11 @@ type Options struct {
 	BalanceClient *http.Client
 	// Jobs is the session-scoped background-job manager (nil disables background jobs).
 	Jobs *jobs.Manager
+	// DisableJobsNote suppresses the controller-injected <background-jobs> block
+	// that folds job-completion state into the next turn. Disabling it keeps the
+	// composed user-message prefix byte-stable (cheapest cache behavior) at the
+	// cost of the model not learning of background completions on its own.
+	DisableJobsNote bool
 	// Registry is the executor's live tool set, and PluginCtx the session-scoped
 	// context; both are needed for hot-adding MCP servers via AddMCPServer.
 	Registry  *tool.Registry
@@ -395,6 +404,7 @@ func New(opts Options) *Controller {
 		balanceKey:             opts.BalanceKey,
 		balanceClient:          opts.BalanceClient,
 		jobs:                   opts.Jobs,
+		disableJobsNote:        opts.DisableJobsNote,
 		reg:                    opts.Registry,
 		pluginCtx:              pluginCtx,
 		cpRoot:                 opts.WorkspaceRoot,
