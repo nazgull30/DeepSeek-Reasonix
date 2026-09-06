@@ -317,6 +317,61 @@ func TestTaskToolFailedForegroundContinuationPersistsAndRejectsReuse(t *testing.
 	}
 }
 
+func TestTaskToolInterruptedForegroundClassifiesPausedAndResumes(t *testing.T) {
+	sub := &mockProvider{name: "sub", streams: [][]provider.Chunk{
+		{
+			{Type: provider.ChunkText, Text: "first answer"},
+			{Type: provider.ChunkDone},
+		},
+		{
+			{Type: provider.ChunkError, Err: context.Canceled},
+		},
+		{
+			{Type: provider.ChunkText, Text: "second answer"},
+			{Type: provider.ChunkDone},
+		},
+	}}
+	store := NewSubagentStore(t.TempDir())
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "read_file", readOnly: true})
+	task := NewTaskTool(sub, nil, reg, 20, 0, 0, 0, 0, 0, 0.0, "", "sys", nil, 0, "", "", nil, nil).
+		WithTranscripts(store, t.TempDir(), "base-model", "base-effort")
+
+	first, err := task.Execute(testTaskContext(), []byte(`{"prompt":"first task"}`))
+	if err != nil {
+		t.Fatalf("first Execute: %v", err)
+	}
+	ref := subagentRefFromOutput(t, first)
+
+	_, err = task.Execute(testTaskContext(), []byte(`{"prompt":"second task","continue_from":"`+ref+`"}`))
+	if err == nil || !strings.Contains(err.Error(), "interrupted and paused") {
+		t.Fatalf("second Execute error = %v, want interrupt pause message", err)
+	}
+	meta, err := store.LoadMeta(ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentPaused {
+		t.Fatalf("status = %q, want paused", meta.Status)
+	}
+
+	third, err := task.Execute(testTaskContext(), []byte(`{"prompt":"third task","continue_from":"`+ref+`"}`))
+	if err != nil {
+		t.Fatalf("third Execute: %v", err)
+	}
+	if !strings.Contains(third, "second answer") {
+		t.Fatalf("third output = %q, want answer", third)
+	}
+	loaded, err := LoadSession(store.sessionPath(ref))
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	msgs := loaded.Snapshot()
+	if len(msgs) != 6 || msgs[1].Content != "first task" || msgs[2].Content != "first answer" || msgs[3].Content != "second task" || msgs[4].Content != "third task" || msgs[5].Content != "second answer" {
+		t.Fatalf("resumed transcript = %+v, want first task/answer, second task, third task, second answer", msgs)
+	}
+}
+
 func TestTaskToolBackgroundPanicPersistsFailedMetadata(t *testing.T) {
 	sub := panicProvider{name: "panic-sub"}
 	store := NewSubagentStore(t.TempDir())

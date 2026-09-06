@@ -332,6 +332,43 @@ func TestSubagentStoreSaveFailedPersistsTranscriptAndRejectsReuse(t *testing.T) 
 	}
 }
 
+func TestSubagentStoreSavePausedPersistsResumableTranscript(t *testing.T) {
+	store := NewSubagentStore(t.TempDir())
+	spec := testSubagentSpec(t, "review")
+	run, err := store.PrepareFresh(spec)
+	if err != nil {
+		t.Fatalf("PrepareFresh: %v", err)
+	}
+	run.Session.Add(provider.Message{Role: provider.RoleUser, Content: "paused continuation"})
+	if err := store.SavePaused(run); err != nil {
+		t.Fatalf("SavePaused: %v", err)
+	}
+	run.Release()
+
+	loaded, err := LoadSession(store.sessionPath(run.Ref))
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := loaded.Snapshot(); len(got) != 2 || got[1].Content != "paused continuation" {
+		t.Fatalf("paused transcript = %+v, want persisted paused prompt", got)
+	}
+	meta, err := store.LoadMeta(run.Ref)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.Status != SubagentPaused {
+		t.Fatalf("status = %q, want paused", meta.Status)
+	}
+	continued, err := store.PrepareContinue(run.Ref, spec)
+	if err != nil {
+		t.Fatalf("PrepareContinue after pause: %v", err)
+	}
+	continued.Release()
+	if _, err := store.PrepareFork(run.Ref, spec); err != nil {
+		t.Fatalf("PrepareFork after pause: %v", err)
+	}
+}
+
 func TestSubagentStoreCleanupStaleRunningMarksInterrupted(t *testing.T) {
 	store := NewSubagentStore(t.TempDir())
 	spec := testSubagentSpec(t, "review")

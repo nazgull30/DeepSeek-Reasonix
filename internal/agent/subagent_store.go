@@ -25,6 +25,13 @@ const (
 	SubagentCompleted   SubagentStatus = "completed"
 	SubagentFailed      SubagentStatus = "failed"
 	SubagentInterrupted SubagentStatus = "interrupted"
+	// SubagentPaused marks a run cleanly stopped by an explicit user cancel
+	// (the turn's context was cancelled, surfacing as context.Canceled on the
+	// provider transport — a clean cut that left the transcript consistent).
+	// Unlike failed/interrupted, a paused transcript may be continued in place
+	// via continue_from, so the retry reuses the exact same message prefix and
+	// keeps the provider prompt cache warm instead of re-deriving everything.
+	SubagentPaused SubagentStatus = "paused"
 )
 
 // SubagentMeta is the sidecar for a persisted sub-agent transcript. It captures
@@ -388,6 +395,29 @@ func (s *SubagentStore) SaveFailed(run *SubagentRun) error {
 	return errors.Join(sessionErr, s.saveMeta(meta))
 }
 
+// SavePaused persists a transcript that was cleanly interrupted by an explicit
+// user cancel (context.Canceled on the transport) in a resumable state. The
+// session bytes are identical to SaveFailed's — the status is the only
+// difference — so a later continue_from with the same identity reloads the same
+// conversation and reuses the provider prompt cache.
+func (s *SubagentStore) SavePaused(run *SubagentRun) error {
+	if s == nil || run == nil || run.Ref == "" {
+		return nil
+	}
+	if s.parentDestroyed(run) {
+		return nil
+	}
+	var sessionErr error
+	if run.Session != nil {
+		sessionErr = run.Session.Save(s.sessionPath(run.Ref))
+	}
+	meta := run.Meta
+	meta.Status = SubagentPaused
+	meta.UpdatedAt = time.Now().UTC()
+	run.Meta = meta
+	return errors.Join(sessionErr, s.saveMeta(meta))
+}
+
 func (s *SubagentStore) LoadMeta(ref string) (SubagentMeta, error) {
 	var meta SubagentMeta
 	if !validSubagentRef(ref) {
@@ -433,6 +463,9 @@ func validateMeta(meta SubagentMeta, spec SubagentSpec) error {
 	if meta.Status == SubagentInterrupted {
 		return fmt.Errorf("subagent reference %q was interrupted by a previous shutdown or crash and cannot be continued or forked; run a fresh subagent instead", meta.Ref)
 	}
+	// SubagentPaused (a clean user-cancel) falls through to the identity checks:
+	// the transcript is consistent on disk, so continuing it reuses the same
+	// message prefix and preserves the provider prompt cache.
 	want := metaFromSpec(meta.Ref, meta.Status, meta.CreatedAt, meta.UpdatedAt, spec)
 	switch {
 	case meta.Kind != want.Kind:
