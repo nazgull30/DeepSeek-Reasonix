@@ -684,7 +684,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithParentMessages(func() []provider.Message { return execSess.Snapshot() }).
 			WithParentResultState(func() *agent.ContentReplacementState { return resultState }).
-			WithTimeBasedCompaction(cfg.Agent.TimeBasedCompactRatio, time.Duration(cfg.Agent.CacheIdleTTLSeconds)*time.Second)
+			WithTimeBasedCompaction(cfg.Agent.TimeBasedCompactRatio, time.Duration(cfg.Agent.CacheIdleTTLSeconds)*time.Second).
+			WithSubagentToolScope(cfg.Agent.SubagentDefaultTools, cfg.Agent.SubagentToolExcludes)
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
 		return "enabled task."
@@ -732,7 +733,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 			prov, price, ctxWin = p, pr, cw
 		}
-		subReg := agent.SubagentToolRegistry(reg, sk.AllowedTools)
+		subReg := agent.SubagentToolRegistry(reg, sk.AllowedTools, cfg.Agent.SubagentToolExcludes...)
 		continueFrom, forkFrom := strings.TrimSpace(runOpts.ContinueFrom), strings.TrimSpace(runOpts.ForkFrom)
 		if continueFrom != "" && forkFrom != "" {
 			return "", fmt.Errorf("continue_from and fork_from are mutually exclusive")

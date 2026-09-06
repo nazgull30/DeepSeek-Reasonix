@@ -850,6 +850,17 @@ type AgentConfig struct {
 	SubagentModels   map[string]string `toml:"subagent_models"`
 	SubagentEffort   string            `toml:"subagent_effort"`
 	SubagentEfforts  map[string]string `toml:"subagent_efforts"`
+	// SubagentDefaultTools narrows the tool scope of spawned sub-agents when the
+	// parent does not pass an explicit whitelist. Empty preserves the current
+	// "every parent tool minus meta/job tools" default, which leaks the whole
+	// MCP namespaces onto every cold-start sub-agent prefix and multiplies cache
+	// misses; a lean listing keeps the sub-agent tool block byte-stable and small.
+	SubagentDefaultTools []string `toml:"subagent_default_tools"`
+	// SubagentToolExcludes subtracts names (typically "mcp__<server>__<tool>")
+	// from every spawned sub-agent's tool scope, regardless of whitelist. Use it
+	// to keep heavyweight MCP tools with large result payloads (e.g. codegraph)
+	// out of sub-agent transcripts that re-read the same graph nodes.
+	SubagentToolExcludes []string `toml:"subagent_tool_excludes"`
 	// OutputStyle selects a persona/tone block folded into the system prompt at
 	// startup (a built-in like "explanatory"/"learning"/"concise", or a custom
 	// .reasonix/output-styles/<name>.md). Empty = the unmodified prompt.
