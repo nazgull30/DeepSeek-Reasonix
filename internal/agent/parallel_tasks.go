@@ -265,6 +265,8 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 					SoftCompactRatio:  p.taskTool.softCompactRatio,
 					CompactRatio:      p.taskTool.compactRatio,
 					CompactForceRatio: p.taskTool.compactForceRatio,
+					TimeBasedCompactRatio: p.taskTool.timeBasedRatio,
+					CacheIdleTTL:         p.taskTool.cacheIdleTTL,
 					ArchiveDir:        p.taskTool.archiveDir,
 					KeepPolicy:        p.taskTool.keepPolicy,
 					ProjectChecks:     p.taskTool.projectChecks,

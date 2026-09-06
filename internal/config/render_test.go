@@ -119,6 +119,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Agent.SubagentModels = map[string]string{"review": "deepseek-pro"}
 	orig.Agent.Keep = []string{"errors", "user_marked"}
 	orig.Agent.RecentKeep = 4
+	orig.Agent.TimeBasedCompactRatio = 0.35
+	orig.Agent.CacheIdleTTLSeconds = 120
+	orig.Agent.DisableJobsNote = true
 	orig.Tools.BashTimeoutSeconds = intPtr(900)
 	orig.Tools.BackgroundJobs.StalledWarningSeconds = intPtr(30)
 	orig.Permissions = PermissionsConfig{

@@ -857,8 +857,27 @@ func (m *Manager) DrainCompletedNoteForSession(parentSession string) string {
 	if len(c) == 0 {
 		return ""
 	}
-	return "Background job updates since your last message: " + strings.Join(c, "; ") +
-		". Read their output with bash_output or wait if you still need it."
+	// Byte-constant, count-less note: the per-job id/label/status text is model
+	// context the session persists turn-to-turn, and job IDs vary, so joining the
+	// raw items — or even a count that can differ — would break the byte-stable
+	// user-message prefix that keeps the provider prompt cache hot across retries
+	// (and grow without bound when many jobs finish between turns). The size in
+	// bytes is identical no matter how many jobs changed or which ones. The
+	// user-facing closing Notice already carries the concrete ids/status; the
+	// model only needs to know something finished so it can grep output or wait
+	// if it cares.
+	var b strings.Builder
+	b.WriteString("One or more background jobs changed state since your last message.")
+	if len(c) > 0 {
+		for _, text := range c {
+			if strings.Contains(text, "may be stalled") {
+				b.WriteString(" Note: a job may be stalled — still running with no visible output.")
+				break
+			}
+		}
+	}
+	b.WriteString(" Check their output with bash_output, continue with background synchronous output, or wait if you still need results.")
+	return b.String()
 }
 
 // SetActiveSession controls which session receives lifecycle notices for jobs

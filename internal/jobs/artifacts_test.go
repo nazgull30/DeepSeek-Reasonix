@@ -247,8 +247,8 @@ func TestSetActiveSessionPathAdoptsUnscopedJobsOnMigrationFailure(t *testing.T) 
 	if len(res) != 1 || !strings.Contains(res[0].Output, "job artifact incomplete: migration:") {
 		t.Fatalf("scoped wait = %+v, want migration error", res)
 	}
-	if note := m.DrainCompletedNoteForSession("session"); !strings.Contains(note, j.ID) {
-		t.Fatalf("adopted completion note = %q, want job id %s", note, j.ID)
+	if note := m.DrainCompletedNoteForSession("session"); !strings.Contains(note, "changed state") {
+		t.Fatalf("adopted completion note = %q, want a completion update for %s", note, j.ID)
 	}
 }
 
