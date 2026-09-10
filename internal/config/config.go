@@ -1387,7 +1387,7 @@ func Default() *Config {
 }
 
 func deepSeekV4FlashPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.007, Input: 0.22, Output: 0.66, PeakCacheHit: 0.014, PeakInput: 0.44, PeakOutput: 1.32, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.003, Input: 0.15, Output: 0.60, PeakCacheHit: 0.006, PeakInput: 0.30, PeakOutput: 1.20, Currency: "$"}
 }
 
 func deepSeekV4ProPrice() *provider.Pricing {
@@ -1395,7 +1395,7 @@ func deepSeekV4ProPrice() *provider.Pricing {
 }
 
 func deepSeekV4FlashPriceCNY() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.05, Input: 1.5, Output: 4.5, PeakCacheHit: 0.10, PeakInput: 3.0, PeakOutput: 9.0, Currency: "¥"}
+	return &provider.Pricing{CacheHit: 0.02, Input: 1.05, Output: 4.20, PeakCacheHit: 0.04, PeakInput: 2.10, PeakOutput: 8.40, Currency: "¥"}
 }
 
 func deepSeekV4ProPriceCNY() *provider.Pricing {
