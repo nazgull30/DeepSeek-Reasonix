@@ -138,3 +138,110 @@ func TestTaskToolDescribesSubagentToolBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestSubagentToolRegistryAppliesConfigExcludes(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, name := range []string{
+		"bash", "read_file", "grep",
+		"mcp__codegraph__codegraph_node",
+		"mcp__codegraph__codegraph_search",
+		"mcp__other__status",
+	} {
+		parent.Add(subagentRegistryTool{name: name})
+	}
+
+	sub := SubagentToolRegistry(parent, nil, "mcp__codegraph__*")
+	for _, keep := range []string{"bash", "read_file", "grep", "mcp__other__status"} {
+		if _, ok := sub.Get(keep); !ok {
+			t.Fatalf("subagent registry should keep %q; got %v", keep, sub.Names())
+		}
+	}
+	for _, dropped := range []string{
+		"mcp__codegraph__codegraph_node",
+		"mcp__codegraph__codegraph_search",
+	} {
+		if _, ok := sub.Get(dropped); ok {
+			t.Fatalf("subagent registry should exclude %q (config excludes); got %v", dropped, sub.Names())
+		}
+	}
+}
+
+func TestTaskToolBuildSubRegUsesDefaultScope(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, name := range []string{
+		"task", "bash", "read_file", "grep",
+		"mcp__codegraph__codegraph_node",
+		"mcp__codegraph__codegraph_search",
+		"mcp__other__status",
+	} {
+		parent.Add(subagentRegistryTool{name: name})
+	}
+	task := &TaskTool{
+		parentReg:     parent,
+		defaultTools:  []string{"read_file", "grep"},
+		extraExcludes: []string{"mcp__codegraph__*"},
+	}
+
+	// No explicit whitelist: the configured default scope applies.
+	sub := task.buildSubReg(nil)
+	for _, keep := range []string{"read_file", "grep"} {
+		if _, ok := sub.Get(keep); !ok {
+			t.Fatalf("default-scope subagent registry should keep %q; got %v", keep, sub.Names())
+		}
+	}
+	for _, dropped := range []string{"bash", "mcp__codegraph__codegraph_node", "mcp__other__status"} {
+		if _, ok := sub.Get(dropped); ok {
+			t.Fatalf("default-scope subagent registry should not include %q; got %v", dropped, sub.Names())
+		}
+	}
+
+	// An explicit parent whitelist overrides the default scope but still honors
+	// the extra excludes.
+	sub = task.buildSubReg([]string{"bash", "mcp__codegraph__codegraph_node", "mcp__other__status"})
+	if _, ok := sub.Get("bash"); !ok {
+		t.Fatalf("explicit whitelist should re-add bash; got %v", sub.Names())
+	}
+	if _, ok := sub.Get("mcp__codegraph__codegraph_node"); ok {
+		t.Fatalf("config excludes must win over an explicit whitelist: %v", sub.Names())
+	}
+	if _, ok := sub.Get("mcp__other__status"); !ok {
+		t.Fatalf("explicit whitelist should keep mcp__other__status; got %v", sub.Names())
+	}
+}
+
+// Byte-stable tool block: identical scopes must produce byte-identical schemas
+// (Fix A) so spawner-selected tool sets stay cache-warm across subtasks, and so
+// the ToolScope hash (toolIdentity) is stable regardless of registration order.
+func TestFilterRegistryToolBlockIsByteStable(t *testing.T) {
+	parent := tool.NewRegistry()
+	for _, name := range []string{
+		"z_last", "a_first", "m_middle",
+		"mcp__codegraph__codegraph_node",
+		"mcp__codegraph__codegraph_search",
+	} {
+		parent.Add(subagentRegistryTool{name: name, schema: `{"type":"object","required":["x"],"properties":{"x":{"type":"string"}}}`})
+	}
+
+	// Scope A: a subset in one order. Scope B: same set, reverse registration.
+	scopeA := FilterRegistry(parent, []string{"z_last", "a_first", "mcp__codegraph__codegraph_search"})
+	scopeB := FilterRegistry(parent, []string{"mcp__codegraph__codegraph_search", "z_last", "a_first"})
+
+	aSchemas := scopeA.Schemas()
+	bSchemas := scopeB.Schemas()
+	if len(aSchemas) != len(bSchemas) {
+		t.Fatalf("scope byte-stability broke set size: %d vs %d", len(aSchemas), len(bSchemas))
+	}
+	aJSON, _ := json.Marshal(aSchemas)
+	bJSON, _ := json.Marshal(bSchemas)
+	if string(aJSON) != string(bJSON) {
+		t.Fatalf("identical scopes produced different tool blocks:\n%s\nvs\n%s", aJSON, bJSON)
+	}
+
+	// The default (unfiltered) scope must also be name-sorted.
+	names := scopeA.Names()
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Fatalf("tool block not name-sorted: %v", names)
+		}
+	}
+}

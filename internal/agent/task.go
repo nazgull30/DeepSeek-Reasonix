@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -58,11 +59,15 @@ func SubagentMetaTools() []string {
 
 // SubagentToolRegistry returns the tool set exposed inside spawned sub-agents:
 // the requested whitelist (or every parent tool), minus meta tools that would
-// spawn more agent work and job tools whose runtime manager is not injected into
-// sub-agents. When bash is present, it is wrapped to advertise and allow only
-// foreground execution.
-func SubagentToolRegistry(parent *tool.Registry, names []string) *tool.Registry {
+// spawn more agent work, job tools whose runtime manager is not injected into
+// sub-agents, and any caller-supplied scoping excludes (exact names or the
+// "mcp__<server>__*" prefix forms). When bash is present, it is wrapped to
+// advertise and allow only foreground execution.
+func SubagentToolRegistry(parent *tool.Registry, names []string, extraExcludes ...string) *tool.Registry {
 	exclude := append(SubagentMetaTools(), subagentJobTools...)
+	if len(extraExcludes) > 0 {
+		exclude = append(exclude, extraExcludes...)
+	}
 	sub := FilterRegistry(parent, names, exclude...)
 	if bash, ok := sub.Get("bash"); ok {
 		sub.Add(foregroundOnlyBash{inner: bash})
@@ -171,6 +176,14 @@ type TaskTool struct {
 	// byte-identical message prefix. The thunk is evaluated at Execute time so
 	// the caller can wire it before the state is constructed.
 	parentResultState func() *ContentReplacementState
+	// defaultTools narrows the sub-agent tool scope when the parent model passes
+	// no explicit whitelist (mirrors Agent.SubagentDefaultTools). Empty keeps the
+	// default "every parent tool minus meta/job tools".
+	defaultTools []string
+	// extraExcludes subtracts tools from every sub-agent scope on top of the
+	// meta/job boundary (mirrors Agent.SubagentToolExcludes). Exact names or
+	// "mcp__<server>__*" prefixes.
+	extraExcludes []string
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -230,6 +243,17 @@ func (t *TaskTool) WithTranscripts(store *SubagentStore, workspaceRoot, baseMode
 
 func (t *TaskTool) WithTranscriptIdentityResolver(resolve func(modelRef, effort string) (string, string)) *TaskTool {
 	t.identityProfile = resolve
+	return t
+}
+
+// WithSubagentToolScope narrows the sub-agent tool scope: defaultTools is the
+// fixed whitelist used when the parent passes none (leaving it empty keeps
+// "every parent tool"), and extraExcludes subtracts tools from every scope
+// (exact names or "mcp__<server>__*" prefixes). Keeping the scope lean shrinks
+// each sub-agent's system+tool prefix, keeping it byte-stable and cache-warm.
+func (t *TaskTool) WithSubagentToolScope(defaultTools, extraExcludes []string) *TaskTool {
+	t.defaultTools = append([]string(nil), defaultTools...)
+	t.extraExcludes = append([]string(nil), extraExcludes...)
 	return t
 }
 
@@ -545,30 +569,59 @@ func (t *TaskTool) effectiveEffortIdentity(effort string) string {
 }
 
 // buildSubReg returns the sub-agent's tool set: the named whitelist (minus
-// unavailable sub-agent tools), or every parent tool except those tools.
+// meta/job tools and configured extra excludes), or the TaskTool default scope
+// when the parent passes no whitelist (or every parent tool minus those if the
+// default scope is also empty).
 func (t *TaskTool) buildSubReg(names []string) *tool.Registry {
-	return SubagentToolRegistry(t.parentReg, names)
+	if len(names) == 0 && len(t.defaultTools) > 0 {
+		names = t.defaultTools
+	}
+	return SubagentToolRegistry(t.parentReg, names, t.extraExcludes...)
 }
 
 // FilterRegistry builds a sub-registry from parent: the named whitelist (empty =
 // every parent tool), minus any excluded names. Used to scope what a spawned
 // sub-agent — a `task` sub-agent or a subagent skill — may call, e.g. excluding
 // `task` to bar recursive nesting, or restricting to a skill's allowed-tools.
+//
+// Exclusion entries match exact tool names, or a trailing-"*" prefix (e.g.
+// "mcp__codegraph__*") to drop a whole MCP server namespace. Output tools are
+// added in sorted name order so identical scopes always produce byte-identical
+// schemas regardless of parent registration order — cache-stability for the
+// sub-agent tool block.
 func FilterRegistry(parent *tool.Registry, names []string, exclude ...string) *tool.Registry {
 	sub := tool.NewRegistry()
 	if parent == nil {
 		return sub
 	}
 	ex := make(map[string]bool, len(exclude))
+	var prefixes []string
 	for _, e := range exclude {
+		if strings.HasSuffix(e, "*") {
+			prefixes = append(prefixes, strings.TrimSuffix(e, "*"))
+			continue
+		}
 		ex[e] = true
+	}
+	excluded := func(name string) bool {
+		if ex[name] {
+			return true
+		}
+		for _, p := range prefixes {
+			if strings.HasPrefix(name, p) {
+				return true
+			}
+		}
+		return false
 	}
 	src := names
 	if len(src) == 0 {
 		src = parent.Names()
 	}
+	src = append([]string(nil), src...)
+	sort.Strings(src)
 	for _, name := range src {
-		if ex[name] {
+		if excluded(name) {
 			continue
 		}
 		if tl, ok := parent.Get(name); ok {

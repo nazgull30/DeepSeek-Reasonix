@@ -259,6 +259,16 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# subagent_efforts = { review = \"max\", task = \"high\" }   # per-tool/skill effort overrides\n")
 	}
+	if len(c.Agent.SubagentDefaultTools) > 0 {
+		fmt.Fprintf(&b, "subagent_default_tools = %s   # fixed sub-agent tool scope when the parent passes no whitelist\n", renderStringArray(c.Agent.SubagentDefaultTools))
+	} else {
+		b.WriteString("# subagent_default_tools = [\"bash\", \"read_file\", \"grep\"]   # optional: lean, byte-stable default sub-agent scope\n")
+	}
+	if len(c.Agent.SubagentToolExcludes) > 0 {
+		fmt.Fprintf(&b, "subagent_tool_excludes = %s   # tools subtracted from every sub-agent scope\n", renderStringArray(c.Agent.SubagentToolExcludes))
+	} else {
+		b.WriteString("# subagent_tool_excludes = [\"mcp__codegraph__*\"]   # optional: keep heavy MCP tools out of sub-agent transcripts\n")
+	}
 	if c.Agent.OutputStyle != "" {
 		fmt.Fprintf(&b, "output_style = %q   # persona/tone folded into the prompt\n", c.Agent.OutputStyle)
 	} else {

@@ -53,3 +53,27 @@ func TestAgentSubagentEffortConfigDecodesFromTOML(t *testing.T) {
 		t.Fatalf("task effort = %q", cfg.Agent.SubagentEfforts["task"])
 	}
 }
+
+func TestAgentSubagentToolScopeConfigDecodesFromTOML(t *testing.T) {
+	var cfg Config
+	if _, err := toml.Decode(`
+[agent]
+subagent_default_tools = ["bash", "read_file", "grep"]
+subagent_tool_excludes = ["mcp__codegraph__*", "mcp__other__heavy"]
+`, &cfg); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if len(cfg.Agent.SubagentDefaultTools) != 3 {
+		t.Fatalf("subagent_default_tools = %v, want 3 entries", cfg.Agent.SubagentDefaultTools)
+	}
+	if cfg.Agent.SubagentDefaultTools[0] != "bash" || cfg.Agent.SubagentDefaultTools[2] != "grep" {
+		t.Fatalf("subagent_default_tools = %v", cfg.Agent.SubagentDefaultTools)
+	}
+	if len(cfg.Agent.SubagentToolExcludes) != 2 {
+		t.Fatalf("subagent_tool_excludes = %v, want 2 entries", cfg.Agent.SubagentToolExcludes)
+	}
+	if cfg.Agent.SubagentToolExcludes[0] != "mcp__codegraph__*" {
+		t.Fatalf("subagent_tool_excludes[0] = %q", cfg.Agent.SubagentToolExcludes[0])
+	}
+}

@@ -490,6 +490,92 @@ type Client struct {
 	resources []Resource
 	toolsMu   sync.Mutex
 	tools     []ToolInfo
+
+	// memo caches successful read-only tools/call results so identical requests
+	// (same tool + canonical args) issued across spawned sub-agents share one
+	// daemon round-trip instead of re-transmitting the same payload over and
+	// over. Bounded and TTL'd; only consulted for read-only tools.
+	memoMu sync.Mutex
+	memo   map[string]clientMemoEntry
+}
+
+// clientMemoEntry is one cached read-only result. at is set at insert time so
+// eviction can drop expired entries first, then the oldest remaining one when
+// the cache saturates.
+type clientMemoEntry struct {
+	at     time.Time
+	result string
+}
+
+// Budgets for the read-only result memo. With ~25 duplicated codegraph calls a
+// session (hundreds of KB), 512 entries and a 60s horizon cover one burst of
+// sub-agent spawning without holding stale results forever.
+const (
+	resultMemoMaxEntries = 512
+	resultMemoTTL        = 60 * time.Second
+)
+
+// memoGet returns a cached read-only result for rawName+canonArgs if it is still
+// fresh. Expired entries are evicted opportunistically.
+func (c *Client) memoGet(canonArgs string) (string, bool) {
+	c.memoMu.Lock()
+	defer c.memoMu.Unlock()
+	cutoff := time.Now().Add(-resultMemoTTL)
+	entry, ok := c.memo[canonArgs]
+	if !ok {
+		return "", false
+	}
+	if entry.at.Before(cutoff) {
+		delete(c.memo, canonArgs)
+		return "", false
+	}
+	return entry.result, true
+}
+
+// memoSet stores a read-only tool result. When the memo is full, expired
+// entries drop first, then the oldest live entry, so a burst of sub-agent
+// spawning cannot grow the cache unboundedly.
+func (c *Client) memoSet(canonArgs, result string) {
+	c.memoMu.Lock()
+	defer c.memoMu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-resultMemoTTL)
+	if c.memo == nil {
+		c.memo = make(map[string]clientMemoEntry, resultMemoMaxEntries)
+	}
+	if len(c.memo) >= resultMemoMaxEntries {
+		var oldest string
+		var oldestAt time.Time
+		for k, e := range c.memo {
+			if e.at.Before(cutoff) {
+				oldest = k
+				break
+			}
+			if oldest == "" || e.at.Before(oldestAt) {
+				oldest, oldestAt = k, e.at
+			}
+		}
+		delete(c.memo, oldest)
+	}
+	c.memo[canonArgs] = clientMemoEntry{at: now, result: result}
+}
+
+// canonicalArgsKey renders args as a deterministic string key: unmarshalling to
+// a map and re-marshalling makes encoding/json emit map keys in sorted order, so
+// semantically identical arguments (regardless of key order in the wire bytes)
+// collapse to one memo entry.
+func canonicalArgsKey(args json.RawMessage) (string, error) {
+	var m map[string]any
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &m); err != nil {
+			return "", err
+		}
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func (c *Client) auxiliaryClient(ctx context.Context) (*Client, context.Context, context.CancelFunc, error) {
@@ -1124,6 +1210,17 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (string,
 			return "", fmt.Errorf("invalid args: %w", err)
 		}
 	}
+	canonKey := t.rawName
+	if t.ReadOnly() {
+		key, err := canonicalArgsKey(args)
+		if err != nil {
+			return "", fmt.Errorf("invalid args: %w", err)
+		}
+		canonKey += "\x00" + key
+		if res, ok := t.client.memoGet(canonKey); ok {
+			return res, nil
+		}
+	}
 	res, err := t.client.call(ctx, "tools/call", map[string]any{
 		"name":      t.rawName,
 		"arguments": argMap,
@@ -1131,7 +1228,14 @@ func (t *remoteTool) Execute(ctx context.Context, args json.RawMessage) (string,
 	if err != nil {
 		return "", err
 	}
-	return parseToolResult(res)
+	text, err := parseToolResult(res)
+	if err != nil {
+		return "", err
+	}
+	if t.ReadOnly() {
+		t.client.memoSet(canonKey, text)
+	}
+	return text, nil
 }
 
 // parseToolResult flattens an MCP tools/call result into plain text.

@@ -850,6 +850,17 @@ type AgentConfig struct {
 	SubagentModels   map[string]string `toml:"subagent_models"`
 	SubagentEffort   string            `toml:"subagent_effort"`
 	SubagentEfforts  map[string]string `toml:"subagent_efforts"`
+	// SubagentDefaultTools narrows the tool scope of spawned sub-agents when the
+	// parent does not pass an explicit whitelist. Empty preserves the current
+	// "every parent tool minus meta/job tools" default, which leaks the whole
+	// MCP namespaces onto every cold-start sub-agent prefix and multiplies cache
+	// misses; a lean listing keeps the sub-agent tool block byte-stable and small.
+	SubagentDefaultTools []string `toml:"subagent_default_tools"`
+	// SubagentToolExcludes subtracts names (typically "mcp__<server>__<tool>")
+	// from every spawned sub-agent's tool scope, regardless of whitelist. Use it
+	// to keep heavyweight MCP tools with large result payloads (e.g. codegraph)
+	// out of sub-agent transcripts that re-read the same graph nodes.
+	SubagentToolExcludes []string `toml:"subagent_tool_excludes"`
 	// OutputStyle selects a persona/tone block folded into the system prompt at
 	// startup (a built-in like "explanatory"/"learning"/"concise", or a custom
 	// .reasonix/output-styles/<name>.md). Empty = the unmodified prompt.
@@ -1376,7 +1387,7 @@ func Default() *Config {
 }
 
 func deepSeekV4FlashPrice() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.007, Input: 0.22, Output: 0.66, PeakCacheHit: 0.014, PeakInput: 0.44, PeakOutput: 1.32, Currency: "$"}
+	return &provider.Pricing{CacheHit: 0.003, Input: 0.15, Output: 0.60, PeakCacheHit: 0.006, PeakInput: 0.30, PeakOutput: 1.20, Currency: "$"}
 }
 
 func deepSeekV4ProPrice() *provider.Pricing {
@@ -1384,7 +1395,7 @@ func deepSeekV4ProPrice() *provider.Pricing {
 }
 
 func deepSeekV4FlashPriceCNY() *provider.Pricing {
-	return &provider.Pricing{CacheHit: 0.05, Input: 1.5, Output: 4.5, PeakCacheHit: 0.10, PeakInput: 3.0, PeakOutput: 9.0, Currency: "¥"}
+	return &provider.Pricing{CacheHit: 0.02, Input: 1.05, Output: 4.20, PeakCacheHit: 0.04, PeakInput: 2.10, PeakOutput: 8.40, Currency: "¥"}
 }
 
 func deepSeekV4ProPriceCNY() *provider.Pricing {
