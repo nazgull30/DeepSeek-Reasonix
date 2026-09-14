@@ -37,6 +37,7 @@ var subagentMetaTools = []string{
 	"research",
 	"review",
 	"security_review",
+	"workflow",
 }
 
 var subagentJobTools = []string{
@@ -699,25 +700,25 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		}
 	}
 	return RunSubAgentWithSession(ctx, prov, subReg, run.Session, prompt, Options{
-		MaxSteps:          maxSteps,
-		Temperature:       t.temperature,
-		Pricing:           pricing,
-		UsageSource:       event.UsageSourceSubagent,
-		Gate:              t.gate,
-		ContextWindow:     ctxWin,
-		ProjectChecks:     t.projectChecks,
-		RecentKeep:        t.recentKeep,
-		SoftCompactRatio:  t.softCompactRatio,
-		CompactRatio:      t.compactRatio,
-		CompactForceRatio: t.compactForceRatio,
+		MaxSteps:              maxSteps,
+		Temperature:           t.temperature,
+		Pricing:               pricing,
+		UsageSource:           event.UsageSourceSubagent,
+		Gate:                  t.gate,
+		ContextWindow:         ctxWin,
+		ProjectChecks:         t.projectChecks,
+		RecentKeep:            t.recentKeep,
+		SoftCompactRatio:      t.softCompactRatio,
+		CompactRatio:          t.compactRatio,
+		CompactForceRatio:     t.compactForceRatio,
 		TimeBasedCompactRatio: t.timeBasedRatio,
-		CacheIdleTTL:         t.cacheIdleTTL,
-		ArchiveDir:        t.archiveDir,
-		KeepPolicy:        t.keepPolicy,
-		ReasoningLanguage: ReasoningLanguageFromContext(ctx),
-		MemoryQueue:       mq,
-		ResultState:       resultState,
-		OnSubagentUsage:   onUsage,
+		CacheIdleTTL:          t.cacheIdleTTL,
+		ArchiveDir:            t.archiveDir,
+		KeepPolicy:            t.keepPolicy,
+		ReasoningLanguage:     ReasoningLanguageFromContext(ctx),
+		MemoryQueue:           mq,
+		ResultState:           resultState,
+		OnSubagentUsage:       onUsage,
 	}, sink)
 }
 

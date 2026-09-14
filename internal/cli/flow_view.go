@@ -63,7 +63,7 @@ type flowNode struct {
 // popup can emphasise it as a "subtask" rather than a plain tool line.
 func isSubagentTool(name string) bool {
 	switch name {
-	case "task", "parallel_tasks", "run_skill", "explore", "research", "review", "security_review":
+	case "task", "parallel_tasks", "run_skill", "explore", "research", "review", "security_review", "workflow":
 		return true
 	}
 	return false
@@ -130,7 +130,7 @@ func (m *chatTUI) flowLoadHistory(full bool) {
 		return
 	}
 
-// Pass 1: index the main transcript's tool calls so top-level ownership and
+	// Pass 1: index the main transcript's tool calls so top-level ownership and
 	// labels resolve. Subagent transcripts were already indexed when first seen;
 	// continuations re-parse only on a full refresh.
 	m.flowHistoryCaller = map[string]string{}

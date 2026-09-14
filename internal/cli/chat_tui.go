@@ -180,6 +180,9 @@ type chatTUI struct {
 	// for /subtask-launched sub-agents, whose tool activity flows to the TUI via a
 	// call context wired to eventCh (there's no real tool call to carry an ID).
 	subtaskSeq int
+	// workflowSeq generates synthetic parent IDs ("workflow-1", …) for
+	// /workflow-launched runs, so their sub-agents nest under a single card.
+	workflowSeq int
 	// flowRoots / flowByID hold the current turn's live flow tree (main-agent
 	// tools, spawned subtasks, and nested children), rebuilt incrementally from
 	// events. flowHistory* holds the whole-SESSION subagent tree rebuilt from the
@@ -448,6 +451,47 @@ type subtaskMsg struct {
 	result   string
 	err      error
 	parentID string
+}
+
+// workflowMsg reports a finished /workflow run.
+type workflowMsg struct {
+	name     string
+	result   any
+	err      error
+	parentID string
+	agents   int
+}
+
+// parseWorkflowArg infers a JSON-ish Go value for a /workflow key=v argument:
+// booleans, integers, and floats pass through typed; anything else stays a
+// string. The script sees the values via its `args` dict.
+func parseWorkflowArg(v string) any {
+	if b, ok := parseBoolLiteral(v); ok {
+		return b
+	}
+	if i, err := strconv.ParseInt(v, 10, 64); err == nil {
+		return i
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil && strings.ContainsAny(v, ".eE") {
+		return f
+	}
+	return v
+}
+
+func parseBoolLiteral(v string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	}
+	return false, false
+}
+
+// singleLine collapses a multi-line text to a single display line, trimming
+// excess whitespace so it fits into a slash-command listing.
+func singleLine(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
 }
 
 // parseSubtaskKeyedValue extracts the value of a key=value /subtask option
@@ -1526,6 +1570,16 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.notice(fmt.Sprintf("subtask %q done", msg.desc))
 			m.commitAgentResult(msg.result)
+		}
+
+	case workflowMsg:
+		m.flowEndSubtask(msg.parentID, msg.err != nil)
+		if msg.err != nil {
+			m.notice(fmt.Sprintf("workflow %q failed: %v", msg.name, msg.err))
+		} else {
+			data, _ := json.MarshalIndent(msg.result, "", "  ")
+			m.notice(fmt.Sprintf("workflow %q done", msg.name))
+			m.commitAgentResult(string(data))
 		}
 
 	case compactDoneMsg:
@@ -4173,6 +4227,60 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 			ctx = agent.WithNestedSink(ctx, parentID, &eventSink{ch: m.eventCh})
 			result, err := tt.Execute(ctx, argsJSON)
 			return subtaskMsg{desc: desc, result: result, err: err, parentID: parentID}
+		}
+	case "/workflow":
+		m.echoLocalCommand(input)
+		wt := m.ctrl.WorkflowTool()
+		if wt == nil {
+			m.notice("workflow tool unavailable (is token economy mode active?)")
+			break
+		}
+		if m.ctrl.Running() {
+			m.notice("finish the current turn before starting a workflow")
+			break
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(input, cmd))
+		if rest == "" {
+			wfs := wt.List()
+			if len(wfs) == 0 {
+				m.notice("no workflows found in .reasonix/workflows/")
+				break
+			}
+			m.commitLine("# Workflows")
+			for _, wf := range wfs {
+				line := "  " + wf.Name
+				if desc := singleLine(wf.Description); desc != "" {
+					line += " — " + desc
+				}
+				m.commitLine(line)
+			}
+			m.commitLine("")
+			m.commitLine("usage: /workflow <name> [key=value ...]")
+			break
+		}
+		parts := strings.Fields(rest)
+		name := parts[0]
+		args := map[string]any{}
+		for _, kv := range parts[1:] {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || k == "" {
+				m.notice(fmt.Sprintf("/workflow: args are key=value pairs, got %q", kv))
+				break
+			}
+			args[k] = parseWorkflowArg(v)
+		}
+		// Render a boxed run card (open state) and a synthetic parent ID so the
+		// workflow's sub-agents stream under it, like a model-driven task call.
+		m.commitSpacer()
+		parentID := fmt.Sprintf("workflow-%d", m.workflowSeq)
+		m.workflowSeq++
+		m.flowStartSubtask(parentID, name)
+		parentSession := agent.BranchID(m.ctrl.SessionPath())
+		return func() tea.Msg {
+			ctx := agent.WithParentSession(context.Background(), parentSession)
+			ctx = agent.WithNestedSink(ctx, parentID, &eventSink{ch: m.eventCh})
+			result, err := wt.Run(ctx, name, args)
+			return workflowMsg{name: name, result: result, err: err, parentID: parentID}
 		}
 	case "/agent_status":
 		m.echoLocalCommand(input)

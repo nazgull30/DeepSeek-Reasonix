@@ -88,6 +88,7 @@ func builtinHelpItems() []compItem {
 		{label: "/agent_clear", hint: "clear a managed agent's session"},
 		{label: "/agent_clear_all", hint: "clear all managed agents' sessions"},
 		{label: "/subtask", hint: "spawn an ad-hoc sub-agent; continue_from=/fork_from= sa_... chains onto a prior run"},
+		{label: "/workflow", hint: "run a scripted orchestration from .reasonix/workflows/; bare lists, name runs"},
 		{label: "/help", hint: i18n.M.CmdHelp},
 		{label: "/copy", hint: i18n.M.CmdCopy},
 		{label: "/export", hint: i18n.M.CmdExport},

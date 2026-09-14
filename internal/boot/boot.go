@@ -43,6 +43,7 @@ import (
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 	"reasonix/internal/tool/sessiontool"
+	"reasonix/internal/workflow"
 )
 
 // ErrUnknownModel is returned by Build when the configured model can't be
@@ -306,6 +307,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// filters — disabled skills must stay visible for management.
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
+	// Workflows: user-authored Starlark orchestration scripts in
+	// .reasonix/workflows/. Discovery mirrors skills; the index (names +
+	// descriptions) is injected alongside skills so the model knows what it can
+	// call. Bodies stay on disk; the workflow tool reads them at call time.
+	workflowStore := workflow.NewStore(root)
+	workflows := workflowStore.List()
 	// Skills index is no longer folded into the system prompt. It is injected as
 	// a user message (an "attachment") immediately after the system prompt so the
 	// base system prompt stays stable across skill changes, preserving the
@@ -688,6 +695,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithSubagentToolScope(cfg.Agent.SubagentDefaultTools, cfg.Agent.SubagentToolExcludes)
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
+		reg.Add(agent.NewWorkflowTool(tt, workflowStore))
 		return "enabled task."
 	}
 	if !tokenEconomy {
@@ -1006,28 +1014,34 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				Content: block,
 			})
 		}
+		if block := workflow.IndexBlock(workflows); block != "" {
+			execSess.Messages = append(execSess.Messages, provider.Message{
+				Role:    provider.RoleUser,
+				Content: block,
+			})
+		}
 	}
 	resultState = agent.NewContentReplacementState(config.ArchiveDir())
 	executor := agent.New(execProv, reg, execSess, agent.Options{
-		MaxSteps:             maxSteps,
-		Temperature:          cfg.Agent.Temperature,
-		Pricing:              entry.Price,
-		Gate:                 headlessGate,
-		Hooks:                hookRunner,
-		Jobs:                 jm,
-		ProjectChecks:        projectChecks,
-		ContextWindow:        entry.ContextWindow,
-		SoftCompactRatio:     cfg.Agent.SoftCompactRatio,
-		CompactRatio:         cfg.Agent.CompactRatio,
-		CompactForceRatio:    cfg.Agent.CompactForceRatio,
+		MaxSteps:              maxSteps,
+		Temperature:           cfg.Agent.Temperature,
+		Pricing:               entry.Price,
+		Gate:                  headlessGate,
+		Hooks:                 hookRunner,
+		Jobs:                  jm,
+		ProjectChecks:         projectChecks,
+		ContextWindow:         entry.ContextWindow,
+		SoftCompactRatio:      cfg.Agent.SoftCompactRatio,
+		CompactRatio:          cfg.Agent.CompactRatio,
+		CompactForceRatio:     cfg.Agent.CompactForceRatio,
 		TimeBasedCompactRatio: cfg.Agent.TimeBasedCompactRatio,
-		CacheIdleTTL:         time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
-		RecentKeep:           cfg.Agent.RecentKeep,
-		ArchiveDir:           config.ArchiveDir(),
-		KeepPolicy:           keepPolicy,
-		ReasoningLanguage:    cfg.ReasoningLanguage(),
-		PlanModeAllowedTools: cfg.Agent.PlanModeAllowedTools,
-		ResultState:          resultState,
+		CacheIdleTTL:          time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
+		RecentKeep:            cfg.Agent.RecentKeep,
+		ArchiveDir:            config.ArchiveDir(),
+		KeepPolicy:            keepPolicy,
+		ReasoningLanguage:     cfg.ReasoningLanguage(),
+		PlanModeAllowedTools:  cfg.Agent.PlanModeAllowedTools,
+		ResultState:           resultState,
 	}, sink)
 
 	var runner agent.Runner = executor
@@ -1051,19 +1065,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			plannerSess := agent.NewSession(agent.PlannerPromptWithContext(mem.Block()))
 			plannerTools := agent.PlannerToolRegistry(reg)
 			runner = agent.NewCoordinator(plannerProv, plannerSess, pe.Price, plannerTools, agent.Options{
-				MaxSteps:          cfg.Agent.PlannerMaxSteps,
-				MaxStepsKey:       "agent.planner_max_steps",
-				Gate:              headlessGate,
-				ContextWindow:     pe.ContextWindow,
-				SoftCompactRatio:  cfg.Agent.SoftCompactRatio,
-				CompactRatio:      cfg.Agent.CompactRatio,
-				CompactForceRatio: cfg.Agent.CompactForceRatio,
+				MaxSteps:              cfg.Agent.PlannerMaxSteps,
+				MaxStepsKey:           "agent.planner_max_steps",
+				Gate:                  headlessGate,
+				ContextWindow:         pe.ContextWindow,
+				SoftCompactRatio:      cfg.Agent.SoftCompactRatio,
+				CompactRatio:          cfg.Agent.CompactRatio,
+				CompactForceRatio:     cfg.Agent.CompactForceRatio,
 				TimeBasedCompactRatio: cfg.Agent.TimeBasedCompactRatio,
-				CacheIdleTTL:         time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
-				RecentKeep:        cfg.Agent.RecentKeep,
-				ArchiveDir:        config.ArchiveDir(),
-				KeepPolicy:        keepPolicy,
-				ReasoningLanguage: cfg.ReasoningLanguage(),
+				CacheIdleTTL:          time.Duration(cfg.Agent.CacheIdleTTLSeconds) * time.Second,
+				RecentKeep:            cfg.Agent.RecentKeep,
+				ArchiveDir:            config.ArchiveDir(),
+				KeepPolicy:            keepPolicy,
+				ReasoningLanguage:     cfg.ReasoningLanguage(),
 			}, executor, cfg.Agent.Temperature, sink, control.TaskWarrantsPlanner)
 			label = entry.Model + " + planner " + pe.Model
 		}

@@ -122,7 +122,7 @@ func TestTaskToolDefaultsToParentToolsWithoutMetaTools(t *testing.T) {
 		got[s.Name] = true
 	}
 	if !got["read_file"] || !got["grep"] || !got["remember"] ||
-		got["task"] || got["run_skill"] || got["explore"] || got["research"] || got["review"] || got["security_review"] {
+		got["task"] || got["run_skill"] || got["explore"] || got["research"] || got["review"] || got["security_review"] || got["workflow"] {
 		t.Errorf("default sub-agent tools = %v, want normal tools inherited and meta-tools stripped", got)
 	}
 }

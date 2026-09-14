@@ -2858,6 +2858,25 @@ func (c *Controller) TaskTool() *agent.TaskTool {
 	return t
 }
 
+// WorkflowTool returns the registered workflow tool (the `workflow` tool), or
+// nil when it isn't present in the registry (e.g. token-economy mode defers it
+// behind connect_tool_source). The TUI's /workflow slash command uses it to run
+// a user-authored Starlark orchestration script from the live controller.
+func (c *Controller) WorkflowTool() *agent.WorkflowTool {
+	if c.reg == nil {
+		return nil
+	}
+	wt, ok := c.reg.Get("workflow")
+	if !ok {
+		return nil
+	}
+	w, ok := wt.(*agent.WorkflowTool)
+	if !ok {
+		return nil
+	}
+	return w
+}
+
 func (c *Controller) History() []provider.Message {
 	if c.executor == nil {
 		return nil

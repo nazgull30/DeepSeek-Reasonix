@@ -563,7 +563,7 @@ model = "x"
 	if !requestToolSchemaContains(parentReq, "bash", "run_in_background") {
 		t.Fatalf("parent bash schema should include run_in_background")
 	}
-	for _, hidden := range []string{"task", "run_skill", "read_skill", "install_skill", "install_source", "explore", "research", "review", "security_review", "wait", "bash_output", "kill_shell"} {
+	for _, hidden := range []string{"task", "run_skill", "read_skill", "install_skill", "install_source", "explore", "research", "review", "security_review", "workflow", "wait", "bash_output", "kill_shell"} {
 		if requestHasTool(subReq, hidden) {
 			t.Fatalf("skill subagent request should hide %q; tools=%v", hidden, toolSchemaNames(subReq.Tools))
 		}
@@ -1132,7 +1132,7 @@ command = "reasonix-missing-mockmcp"
 	}
 	for _, forbidden := range []string{
 		"web_fetch", "task", "run_skill", "read_skill", "install_skill", "install_source",
-		"explore", "research", "review", "security_review",
+		"explore", "research", "review", "security_review", "workflow",
 		"lsp_definition", "lsp_references", "lsp_hover", "lsp_diagnostics",
 	} {
 		if requestHasTool(req, forbidden) {
