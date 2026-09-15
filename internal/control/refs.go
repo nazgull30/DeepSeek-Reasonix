@@ -3,6 +3,7 @@ package control
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -151,20 +152,142 @@ func (c *Controller) HasRefs(line string) bool {
 	return len(c.detectRefs(line)) > 0
 }
 
-// inputImages resolves image @-attachments in the turn input to data URLs so the
-// turn can carry them to a vision-capable model. Best-effort: an unreadable
-// attachment is skipped — the @image ref still lands as text via ResolveRefs.
+// inputImages resolves image @-references in the turn input to data URLs so the
+// turn can carry them to a vision-capable model. Both attachment images
+// (@.reasonix/attachments/…) and worktree image files (@path/to/img.png) are
+// embedded. Best-effort: an unreadable or non-image ref is skipped — the @ref
+// still lands as text via ResolveRefs. When the active model is not
+// vision-capable nothing is embedded (the provider would drop it anyway), so a
+// non-vision model's session history doesn't accumulate base64 blobs.
 func (c *Controller) inputImages(line string) []string {
+	if !c.visionEnabled {
+		return nil
+	}
 	var urls []string
 	for _, r := range c.detectRefs(line) {
-		if r.kind != refImage {
-			continue
-		}
-		if url, err := visionImageDataURL(r.path); err == nil {
-			urls = append(urls, url)
+		switch r.kind {
+		case refImage:
+			if url, err := visionImageDataURL(r.path); err == nil {
+				urls = append(urls, url)
+			}
+		case refFile:
+			if url, err := c.worktreeImageDataURL(r.path); err == nil {
+				urls = append(urls, url)
+			}
 		}
 	}
 	return urls
+}
+
+// worktreeImageDataURL reads an @-referenced worktree image and returns a
+// base64 data URL for a vision-capable model. Non-image files, directories,
+// and oversized files are skipped.
+func (c *Controller) worktreeImageDataURL(path string) (string, error) {
+	raw, mime, err := readWorktreeImage(path, c.cpRoot)
+	if err != nil {
+		return "", err
+	}
+	raw, mime = compressForVision(raw, mime)
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// worktreeImageMime cheaply reports the detected image MIME of an
+// @-referenced worktree file, or ("", false) when it is not a regular image
+// within the vision size cap. ResolveRefs uses it to swap the "image bytes are
+// not inlined" note for a neutral marker when the active model is
+// vision-capable.
+func (c *Controller) worktreeImageMime(path string) (string, bool) {
+	absPath, absBase, ok := resolveAbsRef(path, c.cpRoot)
+	if !ok {
+		return "", false
+	}
+	f, closeFn, info, err := openRefFile(absPath, absBase)
+	if err != nil {
+		return "", false
+	}
+	defer closeFn()
+	if info.IsDir() || info.Size() <= 0 || info.Size() > maxImageAttachmentBytes {
+		return "", false
+	}
+	buf := make([]byte, 512)
+	n, rerr := io.ReadFull(f, buf)
+	if rerr != nil && rerr != io.ErrUnexpectedEOF && rerr != io.EOF {
+		return "", false
+	}
+	mime := imageMime(buf[:n], absPath)
+	if mime == "" {
+		return "", false
+	}
+	return mime, true
+}
+
+// readWorktreeImage opens an @-referenced worktree path and returns its raw
+// bytes and detected image MIME when it is a regular, in-size-cap image file.
+// Sandboxed under baseDir (the controller workspace root) like readFileRef;
+// an empty baseDir reads the path as-is (CLI single-workspace compatibility).
+func readWorktreeImage(path, baseDir string) (raw []byte, mime string, err error) {
+	absPath, absBase, ok := resolveAbsRef(path, baseDir)
+	if !ok {
+		return nil, "", os.ErrNotExist
+	}
+	f, closeFn, info, err := openRefFile(absPath, absBase)
+	if err != nil {
+		return nil, "", err
+	}
+	defer closeFn()
+	if info.IsDir() || info.Size() <= 0 || info.Size() > maxImageAttachmentBytes {
+		return nil, "", fmt.Errorf("not an embeddable image")
+	}
+	raw, err = io.ReadAll(io.LimitReader(f, maxImageAttachmentBytes+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if len(raw) == 0 || len(raw) > maxImageAttachmentBytes {
+		return nil, "", fmt.Errorf("not an embeddable image")
+	}
+	mime = imageMime(raw, absPath)
+	if mime == "" {
+		return nil, "", fmt.Errorf("not an image")
+	}
+	return raw, mime, nil
+}
+
+// openRefFile opens an @-referenced path for reading, sandboxed under absBase
+// (empty = unscoped CLI compatibility). It returns the reader, a close func
+// that also closes any sandbox root, and the file's stat info.
+func openRefFile(absPath, absBase string) (io.ReadCloser, func(), os.FileInfo, error) {
+	if absBase == "" {
+		f, err := os.Open(absPath)
+		if err != nil {
+			return nil, func() {}, nil, err
+		}
+		info, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return nil, func() {}, nil, err
+		}
+		return f, func() { f.Close() }, info, nil
+	}
+	root, rerr := os.OpenRoot(absBase)
+	if rerr != nil {
+		return nil, func() {}, nil, rerr
+	}
+	rel, rerr := filepath.Rel(absBase, absPath)
+	if rerr != nil {
+		root.Close()
+		return nil, func() {}, nil, rerr
+	}
+	info, err := root.Stat(rel)
+	if err != nil {
+		root.Close()
+		return nil, func() {}, nil, err
+	}
+	f, err := root.Open(rel)
+	if err != nil {
+		root.Close()
+		return nil, func() {}, nil, err
+	}
+	return f, func() { f.Close(); root.Close() }, info, nil
 }
 
 // resolveBareNames batch-resolves simple filenames (no path separator) that
@@ -375,6 +498,15 @@ func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bo
 			}
 			appendRefBlock(&b, "resource", `ref="@`+r.raw+`"`, text)
 		case refFile:
+			// A vision-capable model receives the image inline via inputImages,
+			// so resolve it to a neutral marker instead of the "image bytes are
+			// not inlined" note (which would tell the model it has no pixels).
+			if c.visionEnabled {
+				if _, ok := c.worktreeImageMime(r.path); ok {
+					appendRefBlock(&b, "image", `path="`+r.path+`"`, "attached inline to this turn")
+					continue
+				}
+			}
 			text, isDir, err := readFileRef(r.path, c.cpRoot)
 			if err != nil {
 				errs = append(errs, "@"+r.raw+" — "+err.Error())
@@ -386,7 +518,11 @@ func (c *Controller) resolveRefs(ctx context.Context, line string, scopedOnly bo
 			}
 			appendRefBlock(&b, tag, `path="`+r.path+`"`, text)
 		case refImage:
-			appendRefBlock(&b, "image", `path="`+r.path+`"`, "[image attachment available at @"+r.path+"; use an image/OCR/vision MCP tool if visual understanding is needed]")
+			if c.visionEnabled {
+				appendRefBlock(&b, "image", `path="`+r.path+`"`, "attached inline to this turn")
+			} else {
+				appendRefBlock(&b, "image", `path="`+r.path+`"`, "[image attachment available at @"+r.path+"; use an image/OCR/vision MCP tool if visual understanding is needed]")
+			}
 		}
 	}
 	return b.String(), errs

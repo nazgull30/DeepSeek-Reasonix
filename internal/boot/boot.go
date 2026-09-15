@@ -1143,6 +1143,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ReasoningLanguage:      cfg.ReasoningLanguage(),
 		DisableJobsNote:        cfg.Agent.DisableJobsNote,
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
+		VisionEnabled:          config.EffectiveVision(entry),
 		Shell:                  shell,
 		PlanModeAllowedTools:   cfg.Agent.PlanModeAllowedTools,
 		ApprovalTimeout:        opts.ApprovalTimeout,

@@ -52,6 +52,9 @@ kind        = "openai"
 base_url    = "https://api.deepseek.com"
 models      = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default     = "deepseek-v4-flash"   # optional; defaults to the first of `models`
+# Only deepseek-v4-flash accepts image input (deepseek-v4-pro is text-only). With
+# this set, @image refs and pasted images are sent to the model as inline data URLs.
+vision_models = ["deepseek-v4-flash"]
 api_key_env = "DEEPSEEK_API_KEY"
 context_window = 1000000
 # Official DeepSeek providers seed RMB prices by default (peak/off-peak billing;
