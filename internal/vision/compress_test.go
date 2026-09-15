@@ -1,4 +1,4 @@
-package control
+package vision
 
 import (
 	"bytes"
@@ -26,7 +26,7 @@ func makeTestPNG(t *testing.T, w, h int) []byte {
 
 func TestCompressForVisionDownscalesOversizedPNG(t *testing.T) {
 	raw := makeTestPNG(t, 3000, 1500)
-	out, mime := compressForVision(raw, "image/png")
+	out, mime := CompressForVision(raw, "image/png")
 	if mime != "image/png" {
 		t.Errorf("mime = %q, want image/png", mime)
 	}
@@ -36,8 +36,8 @@ func TestCompressForVisionDownscalesOversizedPNG(t *testing.T) {
 	}
 	// Pixel count is what governs vision token cost; assert the reduction there
 	// (byte size isn't a robust invariant for synthetic, highly-compressible input).
-	if cfg.Width != maxVisionDim || cfg.Height != 1500*maxVisionDim/3000 {
-		t.Errorf("dims = %dx%d, want %dx%d", cfg.Width, cfg.Height, maxVisionDim, 1500*maxVisionDim/3000)
+	if cfg.Width != MaxVisionDim || cfg.Height != 1500*MaxVisionDim/3000 {
+		t.Errorf("dims = %dx%d, want %dx%d", cfg.Width, cfg.Height, MaxVisionDim, 1500*MaxVisionDim/3000)
 	}
 	if cfg.Width*cfg.Height >= 3000*1500 {
 		t.Errorf("pixel count %d not reduced from %d", cfg.Width*cfg.Height, 3000*1500)
@@ -46,7 +46,7 @@ func TestCompressForVisionDownscalesOversizedPNG(t *testing.T) {
 
 func TestCompressForVisionKeepsSmallImageVerbatim(t *testing.T) {
 	raw := makeTestPNG(t, 100, 80)
-	out, mime := compressForVision(raw, "image/png")
+	out, mime := CompressForVision(raw, "image/png")
 	if mime != "image/png" || !bytes.Equal(out, raw) {
 		t.Errorf("an in-budget image must pass through unchanged (got %d bytes, mime %q)", len(out), mime)
 	}
@@ -57,18 +57,18 @@ func TestCompressForVisionJPEGStaysJPEG(t *testing.T) {
 	if err := jpeg.Encode(&buf, image.NewRGBA(image.Rect(0, 0, 2400, 1200)), nil); err != nil {
 		t.Fatal(err)
 	}
-	out, mime := compressForVision(buf.Bytes(), "image/jpeg")
+	out, mime := CompressForVision(buf.Bytes(), "image/jpeg")
 	if mime != "image/jpeg" {
 		t.Fatalf("mime = %q, want image/jpeg", mime)
 	}
-	if cfg, _, _ := image.DecodeConfig(bytes.NewReader(out)); cfg.Width != maxVisionDim {
-		t.Errorf("width = %d, want %d", cfg.Width, maxVisionDim)
+	if cfg, _, _ := image.DecodeConfig(bytes.NewReader(out)); cfg.Width != MaxVisionDim {
+		t.Errorf("width = %d, want %d", cfg.Width, MaxVisionDim)
 	}
 }
 
 func TestCompressForVisionPassesThroughUndecodable(t *testing.T) {
 	raw := []byte("<svg xmlns='...'></svg>")
-	out, mime := compressForVision(raw, "image/svg+xml")
+	out, mime := CompressForVision(raw, "image/svg+xml")
 	if mime != "image/svg+xml" || !bytes.Equal(out, raw) {
 		t.Error("an undecodable mime must pass through unchanged")
 	}

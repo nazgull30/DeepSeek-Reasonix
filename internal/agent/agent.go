@@ -21,6 +21,7 @@ import (
 	"reasonix/internal/nilutil"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
+	"reasonix/internal/vision"
 )
 
 // maxToolOutputBytes caps a single tool result before it goes into the model's
@@ -225,6 +226,12 @@ type Agent struct {
 	pricing              *provider.Pricing
 	usageSource          string
 	reasoningLanguage    atomic.Value // string: auto|zh|en
+
+	// visionEnabled, when true, delivers read_image results to a vision-capable
+	// model: each marker the tool produced is read back, compressed, and attached
+	// as an image content block on a synthetic user message placed right after
+	// the turn's tool results.
+	visionEnabled bool
 
 	// sink receives the turn's typed event stream (reasoning/text deltas, tool
 	// dispatch/results, usage, notices). The agent no longer formats output
@@ -601,6 +608,12 @@ type Options struct {
 	Pricing     *provider.Pricing // optional, for per-turn cost display
 	UsageSource string            // optional billable usage source; default executor
 
+	// VisionEnabled, when true, attaches the images a model requests via the
+	// read_image tool to the model's next turn as inline content. The model must
+	// also be vision-capable — the provider self-gates image embedding, so an
+	// over-eager flag is harmless on a text-only model.
+	VisionEnabled bool
+
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
 
@@ -708,30 +721,31 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		maxStepsKey = "agent.max_steps"
 	}
 	a := &Agent{
-		prov:                 prov,
-		tools:                tools,
-		session:              session,
-		maxSteps:             opts.MaxSteps,
-		maxStepsKey:          maxStepsKey,
-		temperature:          opts.Temperature,
-		pricing:              opts.Pricing,
-		usageSource:          usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
-		sink:                 sink,
-		gate:                 gate,
-		hooks:                hooks,
-		jobs:                 opts.Jobs,
-		evidence:             evidence.NewLedger(),
-		projectChecks:        append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
-		contextWindow:        opts.ContextWindow,
-		softCompactRatio:     opts.SoftCompactRatio,
-		compactRatio:         opts.CompactRatio,
-		compactForceRatio:    opts.CompactForceRatio,
-		recentKeep:           opts.RecentKeep,
-		archiveDir:           opts.ArchiveDir,
-		keepPolicy:           opts.KeepPolicy,
-		planModeAllowedTools: stringSet(opts.PlanModeAllowedTools),
-		memQueue:             opts.MemoryQueue,
-		resultState:          opts.ResultState,
+		prov:                  prov,
+		tools:                 tools,
+		session:               session,
+		maxSteps:              opts.MaxSteps,
+		maxStepsKey:           maxStepsKey,
+		temperature:           opts.Temperature,
+		pricing:               opts.Pricing,
+		usageSource:           usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
+		sink:                  sink,
+		gate:                  gate,
+		hooks:                 hooks,
+		jobs:                  opts.Jobs,
+		evidence:              evidence.NewLedger(),
+		projectChecks:         append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		contextWindow:         opts.ContextWindow,
+		softCompactRatio:      opts.SoftCompactRatio,
+		compactRatio:          opts.CompactRatio,
+		compactForceRatio:     opts.CompactForceRatio,
+		recentKeep:            opts.RecentKeep,
+		archiveDir:            opts.ArchiveDir,
+		keepPolicy:            opts.KeepPolicy,
+		planModeAllowedTools:  stringSet(opts.PlanModeAllowedTools),
+		memQueue:              opts.MemoryQueue,
+		resultState:           opts.ResultState,
+		visionEnabled:         opts.VisionEnabled,
 		timeBasedCompactRatio: opts.TimeBasedCompactRatio,
 		cacheIdleTTL:          opts.CacheIdleTTL,
 	}
@@ -897,6 +911,9 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 				Name:       call.Name,
 			})
 		}
+		for _, m := range a.injectReadImageResults(calls, results) {
+			a.session.Add(m)
+		}
 
 		// The prompt only grows from here; compact before the next turn so it
 		// stays within the model's window.
@@ -906,6 +923,50 @@ func (a *Agent) Run(ctx context.Context, input string) error {
 	// is already in the session, so the user can just send another message to pick
 	// up where it left off.
 	return fmt.Errorf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", a.maxSteps, a.maxStepsKey, a.maxStepsKey)
+}
+
+// readImageToolName is the built-in tool whose results carry the vision marker.
+// Kept pinned here (rather than imported from the tool package) so the agent
+// stays decoupled from the built-in registry.
+const readImageToolName = "read_image"
+
+// injectReadImageResults gathers the images the model asked for via the
+// read_image tool during this step and returns a synthetic user message carrying
+// them, so the next request includes the pixels inline. Deterministic and
+// cache-stable: the message is a pure function of the marker paths and the bytes
+// on disk at this point, exactly like user-attached @-refs. When vision is
+// disabled it returns nothing and the transcript carries only the plain
+// tool-result marker text — harmless for a non-vision model.
+func (a *Agent) injectReadImageResults(calls []provider.ToolCall, results []string) []provider.Message {
+	if !a.visionEnabled {
+		return nil
+	}
+	var paths []string
+	var urls []string
+	for i, call := range calls {
+		if call.Name != readImageToolName {
+			continue
+		}
+		path, ok := vision.ParseMarker(results[i])
+		if !ok {
+			continue
+		}
+		raw, mime, err := vision.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		raw, mime = vision.CompressForVision(raw, mime)
+		paths = append(paths, path)
+		urls = append(urls, vision.DataURL(raw, mime))
+	}
+	if len(urls) == 0 {
+		return nil
+	}
+	label := "[image(s) you asked to view — attached inline for analysis]\n" + strings.Join(paths, "\n")
+	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("attached %d image(s) inline from read_image", len(paths))})
+	return []provider.Message{
+		{Role: provider.RoleUser, Content: label, Images: urls},
+	}
 }
 
 func (a *Agent) finalReadinessFailure() string {

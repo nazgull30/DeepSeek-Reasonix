@@ -1,4 +1,4 @@
-package control
+package vision
 
 import (
 	"bytes"
@@ -11,21 +11,21 @@ import (
 	_ "golang.org/x/image/webp" // register webp decoder
 )
 
-// maxVisionDim caps the longest image side sent to a model. OpenAI and Anthropic
+// MaxVisionDim caps the longest image side sent to a model. OpenAI and Anthropic
 // downscale to roughly this server-side anyway, so a larger upload only wastes
 // request bytes and image tokens without adding fidelity.
-const maxVisionDim = 1568
+const MaxVisionDim = 1568
 
 // maxDecodePixels guards against decompression-bomb attachments: a tiny file can
 // declare enormous dimensions. Beyond this we skip decoding and send as-is (still
 // bounded by the 10 MB file cap).
 const maxDecodePixels = 50_000_000
 
-// compressForVision downscales an oversized image to maxVisionDim and re-encodes
+// CompressForVision downscales an oversized image to MaxVisionDim and re-encodes
 // it — PNG/GIF stay lossless (screenshots, text, transparency), JPEG/WebP go to
 // JPEG. Best-effort: an undecodable format, a decode/encode failure, or an image
 // already within budget returns the original bytes and mime unchanged.
-func compressForVision(raw []byte, mime string) ([]byte, string) {
+func CompressForVision(raw []byte, mime string) ([]byte, string) {
 	switch mime {
 	case "image/png", "image/jpeg", "image/gif", "image/webp":
 	default:
@@ -35,14 +35,14 @@ func compressForVision(raw []byte, mime string) ([]byte, string) {
 	if err != nil || cfg.Width*cfg.Height > maxDecodePixels {
 		return raw, mime
 	}
-	if cfg.Width <= maxVisionDim && cfg.Height <= maxVisionDim {
+	if cfg.Width <= MaxVisionDim && cfg.Height <= MaxVisionDim {
 		return raw, mime // within budget — no point re-encoding
 	}
 	src, _, err := image.Decode(bytes.NewReader(raw))
 	if err != nil {
 		return raw, mime
 	}
-	w, h := scaledDims(cfg.Width, cfg.Height, maxVisionDim)
+	w, h := scaledDims(cfg.Width, cfg.Height, MaxVisionDim)
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, src.Bounds(), xdraw.Over, nil)
 
