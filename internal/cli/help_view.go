@@ -92,6 +92,7 @@ func builtinHelpItems() []compItem {
 		{label: "/help", hint: i18n.M.CmdHelp},
 		{label: "/copy", hint: i18n.M.CmdCopy},
 		{label: "/export", hint: i18n.M.CmdExport},
+		{label: "/export_sessions", hint: i18n.M.CmdExportSessions},
 	}
 }
 
