@@ -43,5 +43,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/zalando/go-keyring v0.2.8 // indirect
+	go.starlark.net v0.0.0-20260908191801-89a6a09411d5 // indirect
 	golang.org/x/sync v0.21.0 // indirect
 )

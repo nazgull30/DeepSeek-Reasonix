@@ -118,6 +118,7 @@ func (m *chatTUI) buildSlashItems() []compItem {
 		{label: "/context", insert: "/context", hint: i18n.M.CmdContext},
 		{label: "/stats", insert: "/stats ", hint: i18n.M.CmdStats},
 		{label: "/subtask", insert: "/subtask ", hint: "spawn an ad-hoc sub-agent (true:|false: for parent context; continue_from=/fork_from= sa_... to chain rounds)"},
+		{label: "/workflow", insert: "/workflow ", hint: "run a scripted orchestration from .reasonix/workflows/ (bare: list; name key=value: run)"},
 		{label: "/help", insert: "/help ", hint: i18n.M.CmdHelp},
 		{label: "/memory", insert: "/memory ", hint: i18n.M.CmdMemory},
 		{label: "/migrate", insert: "/migrate", hint: i18n.M.CmdMigrate},
