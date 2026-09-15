@@ -128,6 +128,7 @@ func (m *chatTUI) buildSlashItems() []compItem {
 		{label: "/quit", insert: "/quit", hint: i18n.M.CmdQuit},
 		{label: "/copy", insert: "/copy", hint: i18n.M.CmdCopy},
 		{label: "/export", insert: "/export", hint: i18n.M.CmdExport},
+		{label: "/export_sessions", insert: "/export_sessions", hint: i18n.M.CmdExportSessions},
 	}
 	for _, c := range m.commands {
 		items = append(items, compItem{label: "/" + c.Name, insert: "/" + c.Name + " ", hint: c.Description})

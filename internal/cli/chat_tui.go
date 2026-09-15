@@ -37,6 +37,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/sessionexport"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
@@ -4328,6 +4329,8 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		return m.runCopyCommand(input)
 	case "/export":
 		m.runExportCommand(input)
+	case "/export_sessions":
+		m.runExportSessionsCommand(input)
 	case "/forget":
 		m.forgetMemory(strings.TrimSpace(strings.TrimPrefix(input, cmd)))
 	default:
@@ -4514,6 +4517,61 @@ func (m *chatTUI) runExportCommand(input string) {
 		return
 	}
 	m.notice(fmt.Sprintf(i18n.M.SlashExportDoneFmt, path))
+}
+
+// runExportSessionsCommand snapshots every persisted session artifact — the main
+// transcript, its sub-agent lineage, orchestrator agent transcripts, and the
+// compaction archive — into a timestamped folder for offline analysis, alongside
+// manifest.json and a cache/token summary.md. It is purely local (no model turn).
+func (m *chatTUI) runExportSessionsCommand(input string) {
+	m.echoLocalCommand(input)
+	if m.ctrl == nil {
+		m.notice(i18n.M.SlashUnknown)
+		return
+	}
+
+	// Flush the controller's in-memory state: Snapshot writes the transcript and
+	// folds cumulative usage into the branch-meta sidecar the export copies.
+	if err := m.ctrl.Snapshot(); err != nil {
+		m.notice(fmt.Sprintf("/export_sessions: %v", err))
+		return
+	}
+
+	opts := sessionexport.Options{
+		WorkspaceRoot: m.ctrl.WorkspaceRoot(),
+		SessionDir:    m.ctrl.SessionDir(),
+		MainSession:   m.ctrl.SessionPath(),
+		Archive:       config.ArchiveDir(),
+	}
+
+	// Orchestrator agents persist under the shared session dir; flush the ones
+	// running in this process, then include every persist-enabled transcript.
+	if m.orc != nil {
+		if dir := m.orc.SessionDir(); dir != "" {
+			if err := m.orc.SaveSessions(dir); err != nil {
+				m.notice(fmt.Sprintf("/export_sessions: orchestrator save: %v", err))
+				return
+			}
+			for _, a := range m.orc.Agents() {
+				if !a.Config.Persist {
+					continue
+				}
+				opts.Sessions = append(opts.Sessions, sessionexport.NamedSession{
+					Name: a.Name,
+					Path: m.orc.SessionPath(dir, a.Name),
+				})
+			}
+		}
+	}
+
+	res, err := sessionexport.Export(opts)
+	if err != nil {
+		m.notice(fmt.Sprintf("/export_sessions: %v", err))
+		return
+	}
+	m.notice(fmt.Sprintf("%d sessions · %d sub-agents · %s",
+		res.Totals.Sessions, res.Totals.Subagents,
+		fmt.Sprintf(i18n.M.SlashExportSessionsDoneFmt, res.Dir)))
 }
 
 func (m *chatTUI) echoLocalCommand(input string) {
