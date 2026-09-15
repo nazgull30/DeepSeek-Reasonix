@@ -3,10 +3,8 @@ package control
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +13,7 @@ import (
 	"time"
 
 	"reasonix/internal/proc"
+	"reasonix/internal/vision"
 )
 
 // maxFileRefBytes caps how much of an @-referenced file is injected into a
@@ -187,8 +186,8 @@ func (c *Controller) worktreeImageDataURL(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	raw, mime = compressForVision(raw, mime)
-	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(raw), nil
+	raw, mime = vision.CompressForVision(raw, mime)
+	return vision.DataURL(raw, mime), nil
 }
 
 // worktreeImageMime cheaply reports the detected image MIME of an
@@ -602,7 +601,7 @@ func readFileRef(path, baseDir string) (content string, isDir bool, err error) {
 	data := buf[:n]
 
 	if mime := imageMime(data, rel); mime != "" {
-		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — image bytes are not inlined. Use an available MCP image/OCR/vision tool with this path when visual understanding is needed.]", displayPath, mime, info.Size()), false, nil
+		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — image bytes are not inlined. Use the read_image tool with this path when visual understanding is needed.]", displayPath, mime, info.Size()), false, nil
 	}
 	if bytes.IndexByte(data[:min(n, 8192)], 0) >= 0 {
 		return fmt.Sprintf("[binary file %s, %d bytes — not shown]", displayPath, info.Size()), false, nil
@@ -679,7 +678,7 @@ func readFileRefUnscoped(path string) (content string, isDir bool, err error) {
 	data := buf[:n]
 
 	if mime := imageMime(data, path); mime != "" {
-		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — image bytes are not inlined. Use an available MCP image/OCR/vision tool with this path when visual understanding is needed.]", path, mime, info.Size()), false, nil
+		return fmt.Sprintf("[image file %s, mime=%s, %d bytes — image bytes are not inlined. Use the read_image tool with this path when visual understanding is needed.]", path, mime, info.Size()), false, nil
 	}
 	if bytes.IndexByte(data[:min(n, 8192)], 0) >= 0 {
 		return fmt.Sprintf("[binary file %s, %d bytes — not shown]", path, info.Size()), false, nil
@@ -901,21 +900,5 @@ with pdfplumber.open(path) as pdf:
 `
 
 func imageMime(data []byte, path string) string {
-	mime := http.DetectContentType(data[:min(len(data), 512)])
-	if strings.HasPrefix(mime, "image/") {
-		return mime
-	}
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png":
-		return "image/png"
-	case ".jpg", ".jpeg":
-		return "image/jpeg"
-	case ".gif":
-		return "image/gif"
-	case ".webp":
-		return "image/webp"
-	case ".tiff", ".tif":
-		return "image/tiff"
-	}
-	return ""
+	return vision.DetectImageMime(data, path)
 }

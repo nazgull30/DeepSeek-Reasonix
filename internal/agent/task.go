@@ -185,6 +185,9 @@ type TaskTool struct {
 	// meta/job boundary (mirrors Agent.SubagentToolExcludes). Exact names or
 	// "mcp__<server>__*" prefixes.
 	extraExcludes []string
+	// visionEnabled mirrors the parent's VisionEnabled so spawned sub-agents
+	// deliver read_image results inline the same way the parent does.
+	visionEnabled bool
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -273,6 +276,15 @@ func (t *TaskTool) WithParentMessages(fn func() []provider.Message) *TaskTool {
 // spawned sub-agent so they inherit the parent's byte-identical message prefix.
 func (t *TaskTool) WithParentResultState(fn func() *ContentReplacementState) *TaskTool {
 	t.parentResultState = fn
+	return t
+}
+
+// WithVisionEnabled propagates the parent's vision setting to every spawned
+// sub-agent, so read_image results are delivered inline to them too. The
+// provider self-gates image embedding, so a child overridden onto a non-vision
+// model just drops the payloads rather than erroring.
+func (t *TaskTool) WithVisionEnabled(enabled bool) *TaskTool {
+	t.visionEnabled = enabled
 	return t
 }
 
@@ -718,6 +730,7 @@ func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *too
 		ReasoningLanguage:     ReasoningLanguageFromContext(ctx),
 		MemoryQueue:           mq,
 		ResultState:           resultState,
+		VisionEnabled:         t.visionEnabled,
 		OnSubagentUsage:       onUsage,
 	}, sink)
 }

@@ -692,7 +692,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithParentMessages(func() []provider.Message { return execSess.Snapshot() }).
 			WithParentResultState(func() *agent.ContentReplacementState { return resultState }).
 			WithTimeBasedCompaction(cfg.Agent.TimeBasedCompactRatio, time.Duration(cfg.Agent.CacheIdleTTLSeconds)*time.Second).
-			WithSubagentToolScope(cfg.Agent.SubagentDefaultTools, cfg.Agent.SubagentToolExcludes)
+			WithSubagentToolScope(cfg.Agent.SubagentDefaultTools, cfg.Agent.SubagentToolExcludes).
+			WithVisionEnabled(config.EffectiveVision(entry))
 		reg.Add(tt)
 		reg.Add(agent.NewParallelTasksTool(tt, reg))
 		reg.Add(agent.NewWorkflowTool(tt, workflowStore))
@@ -802,6 +803,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			RecentKeep:        cfg.Agent.RecentKeep,
 			ArchiveDir:        config.ArchiveDir(),
 			KeepPolicy:        keepPolicy,
+			VisionEnabled:     config.EffectiveVision(entry),
 			ReasoningLanguage: agent.ReasoningLanguageFromContext(sctx),
 		}, agent.NestedSink(sctx, event.Discard))
 		if err != nil {
@@ -1042,6 +1044,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		ReasoningLanguage:     cfg.ReasoningLanguage(),
 		PlanModeAllowedTools:  cfg.Agent.PlanModeAllowedTools,
 		ResultState:           resultState,
+		VisionEnabled:         config.EffectiveVision(entry),
 	}, sink)
 
 	var runner agent.Runner = executor
@@ -1078,6 +1081,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				ArchiveDir:            config.ArchiveDir(),
 				KeepPolicy:            keepPolicy,
 				ReasoningLanguage:     cfg.ReasoningLanguage(),
+				VisionEnabled:         config.EffectiveVision(pe),
 			}, executor, cfg.Agent.Temperature, sink, control.TaskWarrantsPlanner)
 			label = entry.Model + " + planner " + pe.Model
 		}

@@ -46,6 +46,7 @@ func (w Workspace) Tools(enabled ...string) []tool.Tool {
 
 	overrides := map[string]tool.Tool{
 		"read_file":     readFile{workDir: w.Dir},
+		"read_image":    readImage{workDir: w.Dir},
 		"write_file":    writeFile{workDir: w.Dir, roots: roots},
 		"edit_file":     editFile{workDir: w.Dir, roots: roots},
 		"multi_edit":    multiEdit{workDir: w.Dir, roots: roots},

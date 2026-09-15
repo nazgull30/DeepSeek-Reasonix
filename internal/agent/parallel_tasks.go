@@ -255,22 +255,23 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 				sess := NewSession("")
 				mq, _ := memory.QueueFromContext(ctx)
 				output, runErr := RunSubAgentWithSession(ctx, prov, subReg, sess, prompt, Options{
-					MaxSteps:          max,
-					Temperature:       p.taskTool.temperature,
-					Pricing:           pricing,
-					UsageSource:       event.UsageSourceSubagent,
-					Gate:              p.taskTool.gate,
-					ContextWindow:     ctxWin,
-					RecentKeep:        p.taskTool.recentKeep,
-					SoftCompactRatio:  p.taskTool.softCompactRatio,
-					CompactRatio:      p.taskTool.compactRatio,
-					CompactForceRatio: p.taskTool.compactForceRatio,
+					MaxSteps:              max,
+					Temperature:           p.taskTool.temperature,
+					Pricing:               pricing,
+					UsageSource:           event.UsageSourceSubagent,
+					Gate:                  p.taskTool.gate,
+					ContextWindow:         ctxWin,
+					RecentKeep:            p.taskTool.recentKeep,
+					SoftCompactRatio:      p.taskTool.softCompactRatio,
+					CompactRatio:          p.taskTool.compactRatio,
+					CompactForceRatio:     p.taskTool.compactForceRatio,
 					TimeBasedCompactRatio: p.taskTool.timeBasedRatio,
-					CacheIdleTTL:         p.taskTool.cacheIdleTTL,
-					ArchiveDir:        p.taskTool.archiveDir,
-					KeepPolicy:        p.taskTool.keepPolicy,
-					ProjectChecks:     p.taskTool.projectChecks,
-					MemoryQueue:       mq,
+					CacheIdleTTL:          p.taskTool.cacheIdleTTL,
+					ArchiveDir:            p.taskTool.archiveDir,
+					KeepPolicy:            p.taskTool.keepPolicy,
+					ProjectChecks:         p.taskTool.projectChecks,
+					MemoryQueue:           mq,
+					VisionEnabled:         p.taskTool.visionEnabled,
 				}, nested)
 
 				if runErr != nil {
