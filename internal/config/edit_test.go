@@ -558,6 +558,28 @@ func TestEffectiveVisionForOfficialMimoModels(t *testing.T) {
 	}
 }
 
+func TestEffectiveVisionForOfficialDeepSeekModels(t *testing.T) {
+	c := Default()
+	c.Desktop.ProviderAccess = []string{"deepseek"}
+	normalizeDesktopOfficialProviderAccess(c)
+
+	flash, ok := c.ResolveModel("deepseek/deepseek-v4-flash")
+	if !ok {
+		t.Fatal("ResolveModel did not find deepseek/deepseek-v4-flash")
+	}
+	if !EffectiveVision(flash) {
+		t.Fatalf("deepseek-v4-flash on the official DeepSeek API should enable vision")
+	}
+
+	pro, ok := c.ResolveModel("deepseek/deepseek-v4-pro")
+	if !ok {
+		t.Fatal("ResolveModel did not find deepseek/deepseek-v4-pro")
+	}
+	if EffectiveVision(pro) {
+		t.Fatalf("deepseek-v4-pro should remain text-only by default")
+	}
+}
+
 func TestEffectiveVisionDoesNotInferCustomMimoProxy(t *testing.T) {
 	custom := &ProviderEntry{
 		Name:    "mimo-proxy",

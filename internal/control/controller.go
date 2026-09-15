@@ -94,6 +94,7 @@ type Controller struct {
 	disableColdResumePrune bool
 	shell                  sandbox.Shell // interpreter for user-invoked "!" commands; zero = auto
 	classifier             autoPlanClassifier
+	visionEnabled          bool                             // current model accepts image input — embed image refs, drop the not-inlined note
 	startedOnce            bool                             // guards the one-shot SessionStart hook on first turn
 	onRemember             func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
 
@@ -343,6 +344,11 @@ type Options struct {
 	// runs when a session resumes past the provider cache window. Zero value
 	// keeps the prune on (the cheaper default).
 	DisableColdResumePrune bool
+	// VisionEnabled reports whether the active model accepts image input. When
+	// true the controller embeds image @-refs (attachments and worktree files)
+	// as data URLs on the user turn and resolves image refs to a neutral marker
+	// instead of the "image bytes are not inlined" note.
+	VisionEnabled bool
 	// Shell is the interpreter user-invoked "!" commands run under, so /shell
 	// matches the agent's configured [tools.shell] choice. Zero value = auto.
 	Shell      sandbox.Shell
@@ -397,6 +403,7 @@ func New(opts Options) *Controller {
 		autoPlan:               normalizeAutoPlan(opts.AutoPlan),
 		reasoningLanguage:      config.NormalizeReasoningLanguage(opts.ReasoningLanguage),
 		disableColdResumePrune: opts.DisableColdResumePrune,
+		visionEnabled:          opts.VisionEnabled,
 		shell:                  opts.Shell,
 		classifier:             classifier,
 		onRemember:             opts.OnRemember,

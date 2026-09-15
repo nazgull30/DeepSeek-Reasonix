@@ -1378,7 +1378,7 @@ func Default() *Config {
 			Weixin:           WeixinBotConfig{AccountID: "default", TokenEnv: "WEIXIN_BOT_TOKEN", APIBase: "https://ilinkai.weixin.qq.com"},
 		},
 		Providers: []ProviderEntry{
-			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
+			{Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", VisionModels: []string{"deepseek-v4-flash"}, APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4FlashPrice()},
 			{Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY", BalanceURL: "https://api.deepseek.com/user/balance", ContextWindow: 1_000_000, Price: deepSeekV4ProPrice()},
 			{Name: "mimo-pro", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5-pro", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25ProPriceUSD(), NoProxy: true},
 			{Name: "mimo-flash", Kind: "openai", BaseURL: "https://api.xiaomimimo.com/v1", Model: "mimo-v2.5", APIKeyEnv: "MIMO_API_KEY", ContextWindow: 1_000_000, Price: mimoV25PriceUSD(), NoProxy: true},
@@ -2447,6 +2447,9 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 	if p, ok := c.Provider("deepseek"); ok {
 		if officialProviderKind(p) == "deepseek" {
 			backfillOfficialContextWindow(p, 1_000_000)
+			// deepseek-v4-flash is the only official model that accepts image
+			// input (deepseek-v4-pro is text-only per DeepSeek's docs).
+			mergeVisionModelsIntoProvider(p, []string{"deepseek-v4-flash"})
 		}
 		return
 	}
@@ -2456,6 +2459,7 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		BaseURL:       "https://api.deepseek.com",
 		Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
 		Default:       "deepseek-v4-flash",
+		VisionModels:  []string{"deepseek-v4-flash"},
 		APIKeyEnv:     "DEEPSEEK_API_KEY",
 		BalanceURL:    "https://api.deepseek.com/user/balance",
 		ContextWindow: 1_000_000,
