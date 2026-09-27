@@ -123,6 +123,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		visionDetail:  visionDetail,
 		effort:        effort,
 		http:          httpClient,
+		headers:       provider.NewWireHeaders(cfg.BaseURL, cfg.Headers),
 		idleTimeout:   defaultStreamIdleTimeout,
 		replayBackoff: defaultReplayBackoff,
 	}, nil
@@ -146,6 +147,7 @@ type client struct {
 	baseURL      string
 	model        string
 	http         *http.Client
+	headers      *provider.WireHeaders // client identity, configured headers, per-conversation session id
 	deepseek     bool
 	minimax      bool          // true for api.minimaxi.com — emits MiniMax-M3's thinking knob instead of reasoning_effort
 	vision       bool          // model accepts image input — embed attached images as image_url parts
@@ -159,6 +161,11 @@ type client struct {
 }
 
 func (c *client) Name() string { return c.name }
+
+// SetSessionID rebinds the conversation this client speaks for — the controller
+// calls it whenever the session changes, so a gateway that routes and caches per
+// conversation (OpenCode Zen/Go) keeps one conversation on one route.
+func (c *client) SetSessionID(id string) { c.headers.SetSessionID(id) }
 
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
@@ -208,6 +215,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 			httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
 		}
 		httpReq.Header.Set("Accept", "text/event-stream")
+		c.headers.Apply(httpReq)
 		return httpReq, nil
 	}
 	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)

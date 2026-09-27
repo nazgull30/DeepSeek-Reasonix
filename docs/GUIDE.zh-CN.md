@@ -12,6 +12,7 @@
 ## 目录
 
 - [配置](#配置)
+- [按会话路由的网关（OpenCode Go / Zen）](#按会话路由的网关opencode-go--zen)
 - [配置路径](./CONFIG_PATHS.zh-CN.md)
 - [思考语言](./REASONING_LANGUAGE.zh-CN.md)
 - [桌面端 Hooks](./DESKTOP_HOOKS.zh-CN.md)
@@ -83,6 +84,36 @@ command = "reasonix-plugin-example"
 ```
 
 完整 schema 与每个字段的契约见 [`SPEC.md` §5](./SPEC.md#5-configuration-toml)。
+
+### 按会话路由的网关（OpenCode Go / Zen）
+
+OpenCode Go 订阅就是又一个 provider 条目，不需要配置任何 header：
+
+```toml
+[[providers]]
+name        = "opencode-go"
+kind        = "openai"
+base_url    = "https://opencode.ai/zen/go/v1"
+models      = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default     = "deepseek-v4-flash"
+api_key_env = "OPENCODE_GO_TOKEN"
+```
+
+缺少 `x-opencode-session` 的请求会被 Go 拒绝（HTTP 400，“cannot be routed
+efficiently”）——该 id 是它把一次会话固定在一条路由上、并复用该会话 prompt
+缓存的依据。Reasonix 自动发送它，并在 `/new`、`/resume`、fork、切换分支时重新
+绑定到当前会话，因此同一会话的每一轮都带同一个 id。请求同时以
+`reasonix-agent/1.0` 标识自己，而不是 Go 默认的 `Go-http-client/1.1`。
+
+Go 中以 Anthropic 形状提供的模型（`minimax-m3`、`qwen*` 系列）需要一个指向同一
+`base_url` 的 `kind = "anthropic"` 条目；其余模型走 `/chat/completions`。
+
+其他端点专属的 header 走 provider 的静态 `headers`（值会从环境展开 `${VAR}`，
+密钥不落在文件里）：
+
+```toml
+headers = { X-Tenant = "acme", Authorization = "Bearer ${GATEWAY_TOKEN}" }
+```
 
 ## 快捷键
 

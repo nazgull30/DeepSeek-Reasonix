@@ -424,6 +424,7 @@ func New(opts Options) *Controller {
 	// Checkpoints: bind a store to the session and route writer pre-edits into it.
 	c.rebindCheckpoints(opts.SessionPath)
 	c.setActiveJobSession(opts.SessionPath)
+	c.bindProviderSession(opts.SessionPath)
 	cmdsInit := opts.Commands
 	c.commands.Store(&cmdsInit)
 	if c.executor != nil {
@@ -485,6 +486,18 @@ func ckptDir(sessionPath string) string {
 // goalStatePath derives a session's persisted goal-state sidecar.
 func goalStatePath(sessionPath string) string {
 	return agent.GoalStateSidecar(sessionPath)
+}
+
+// bindProviderSession points the model backend at the conversation it is now
+// serving. Gateways that route and prompt-cache per conversation (OpenCode
+// Zen/Go) reject a request with no session id, and route better when every turn
+// of one conversation carries the same one — so the id is the session's own.
+// A headless run with no session file keeps the id the client minted for itself.
+func (c *Controller) bindProviderSession(sessionPath string) {
+	if c.executor == nil {
+		return
+	}
+	c.executor.SetSessionID(agent.BranchID(sessionPath))
 }
 
 // rebindCheckpoints points the store at the (possibly new) session, loading any
@@ -2021,6 +2034,7 @@ func (c *Controller) NewSession() error {
 		c.mu.Unlock()
 	}
 	c.setActiveJobSession(c.SessionPath())
+	c.bindProviderSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
 	c.resetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
@@ -2065,6 +2079,7 @@ func (c *Controller) ClearSession() error {
 		c.mu.Unlock()
 	}
 	c.setActiveJobSession(c.SessionPath())
+	c.bindProviderSession(c.SessionPath())
 	c.executor.SetSession(agent.NewSession(c.systemPrompt))
 	c.resetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
@@ -2302,6 +2317,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		c.sessionPath = newPath
 		c.mu.Unlock()
 		c.setActiveJobSession(newPath)
+		c.bindProviderSession(newPath)
 		c.rebindCheckpoints(newPath)
 	}
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
@@ -2373,6 +2389,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	c.sessionPath = newPath
 	c.mu.Unlock()
 	c.setActiveJobSession(newPath)
+	c.bindProviderSession(newPath)
 	c.rebindCheckpoints(newPath)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
@@ -2424,6 +2441,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	c.sessionPath = match.Path
 	c.mu.Unlock()
 	c.setActiveJobSession(match.Path)
+	c.bindProviderSession(match.Path)
 	c.rebindCheckpoints(match.Path)
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
@@ -2532,6 +2550,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.sessionPath = path
 	c.mu.Unlock()
 	c.setActiveJobSession(path)
+	c.bindProviderSession(path)
 	c.rebindCheckpoints(path)
 	// Restore cumulative session usage from the sidecar metadata.
 	if meta, ok, err := agent.LoadBranchMeta(path); err == nil && ok && meta.SessionUsage != nil {
@@ -2770,6 +2789,7 @@ func (c *Controller) SetSessionPath(p string) {
 	c.sessionPath = p
 	c.mu.Unlock()
 	c.setActiveJobSession(p)
+	c.bindProviderSession(p)
 	c.rebindCheckpoints(p)
 }
 

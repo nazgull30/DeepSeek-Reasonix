@@ -104,6 +104,7 @@ func New(cfg provider.Config) (provider.Provider, error) {
 		effort:      effort,
 		vision:      vision,
 		http:        httpClient, // no overall timeout; lifecycle is ctx-driven
+		headers:     provider.NewWireHeaders(baseURL, cfg.Headers),
 		idleTimeout: defaultStreamIdleTimeout,
 	}, nil
 }
@@ -124,11 +125,18 @@ type client struct {
 	effort      string // output_config.effort: low|medium|high|xhigh|max; "" = provider default
 	vision      bool   // model accepts image input — embed attached images as base64 image blocks
 	http        *http.Client
-	idleTimeout time.Duration // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
-	authed      atomic.Bool   // a request has succeeded — gate transient-401 retry
+	headers     *provider.WireHeaders // client identity, configured headers, per-conversation session id
+	idleTimeout time.Duration         // SSE stall watchdog window; defaultStreamIdleTimeout unless a test overrides
+	authed      atomic.Bool           // a request has succeeded — gate transient-401 retry
 }
 
 func (c *client) Name() string { return c.name }
+
+// SetSessionID rebinds the conversation this client speaks for — the controller
+// calls it whenever the session changes, so a gateway that routes and caches per
+// conversation (OpenCode Zen/Go, which serves MiniMax/Qwen over /v1/messages)
+// keeps one conversation on one route.
+func (c *client) SetSessionID(id string) { c.headers.SetSessionID(id) }
 
 func (c *client) sendOpts() provider.SendOptions {
 	return provider.SendOptions{
@@ -166,6 +174,7 @@ func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provi
 		httpReq.Header.Set("Accept", "text/event-stream")
 		httpReq.Header.Set("x-api-key", c.apiKey)
 		httpReq.Header.Set("anthropic-version", anthropicVersion)
+		c.headers.Apply(httpReq)
 		return httpReq, nil
 	}
 	resp, err := provider.SendWithRetry(ctx, c.http, c.sendOpts(), newReq)
