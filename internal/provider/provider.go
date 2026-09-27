@@ -691,6 +691,11 @@ type Config struct {
 	Model   string         // model id
 	APIKey  string         // resolved from api_key_env
 	Extra   map[string]any // kind-specific options
+	// Headers are static headers stamped on every request to this endpoint (the
+	// config's provider `headers`, with ${VAR} already expanded). They sit on top
+	// of the client's own identity/session headers, so a gateway-specific key
+	// (a tenant id, a routing hint) can be configured without code.
+	Headers map[string]string
 }
 
 // AuthError reports that a provider rejected the API key (HTTP 401/403). Its

@@ -333,6 +333,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.NoProxy {
 				b.WriteString("no_proxy    = true   # reach this base_url directly, never via the proxy\n")
 			}
+			if len(p.Headers) > 0 {
+				fmt.Fprintf(&b, "headers     = %s   # extra headers on every request to this provider; ${VAR} expands from the environment\n", renderStringMap(p.Headers))
+			}
 			b.WriteString("\n")
 		}
 	}

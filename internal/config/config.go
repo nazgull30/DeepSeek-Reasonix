@@ -969,6 +969,12 @@ type ProviderEntry struct {
 	// NoProxy reaches this provider's base_url directly, never through the proxy.
 	// For China-only endpoints a foreign-exit proxy resets the TLS handshake (#2803).
 	NoProxy bool `toml:"no_proxy"`
+	// Headers are stamped on every request to this provider, on top of the
+	// client's own identity and session headers. Use it for endpoint-specific
+	// keys (a tenant id, a routing hint); values expand ${VAR} like plugin
+	// headers, so secrets stay in the environment. OpenCode Zen/Go needs no
+	// configuration here — the harness sends its session header on its own.
+	Headers map[string]string `toml:"headers"`
 }
 
 // ModelList returns the models this provider exposes: the explicit `models` list,

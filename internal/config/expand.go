@@ -49,6 +49,15 @@ func (e PluginEntry) ExpandedPlugin() PluginEntry {
 	return out
 }
 
+// ExpandedProvider returns a copy of e with ${VAR} references expanded across the
+// header values — the fields a provider sends on the wire. The entry itself is
+// left untouched.
+func (e ProviderEntry) ExpandedProvider() ProviderEntry {
+	out := e
+	out.Headers = expandMap(e.Headers)
+	return out
+}
+
 func expandMap(m map[string]string) map[string]string {
 	if len(m) == 0 {
 		return m

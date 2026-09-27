@@ -513,6 +513,12 @@ func (a *Agent) SessionUsage() SessionUsageMeta { return a.sessionUsage }
 // SetSessionUsage restores cumulative session totals (used on /resume).
 func (a *Agent) SetSessionUsage(u SessionUsageMeta) { a.sessionUsage = u }
 
+// SetSessionID rebinds the model backend to the conversation id of the session it
+// is now serving, so a gateway that routes and prompt-caches per conversation
+// (OpenCode Zen/Go) keeps that conversation on one route. A no-op for providers
+// that don't carry a session id.
+func (a *Agent) SetSessionID(id string) { provider.SetSessionID(a.prov, id) }
+
 // ResetSessionUsage zeros the cumulative session totals (used on /new).
 func (a *Agent) ResetSessionUsage() { a.sessionUsage = SessionUsageMeta{} }
 

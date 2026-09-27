@@ -47,3 +47,22 @@ func TestExpandedPlugin(t *testing.T) {
 		t.Error("ExpandedPlugin mutated the original entry")
 	}
 }
+
+func TestExpandedProvider(t *testing.T) {
+	t.Setenv("REASONIX_TEST_TENANT", "acme")
+	e := ProviderEntry{
+		Name:    "opencode-go",
+		BaseURL: "https://opencode.ai/zen/go/v1",
+		Headers: map[string]string{"X-Tenant": "${REASONIX_TEST_TENANT}", "X-Static": "v"},
+	}
+	out := e.ExpandedProvider()
+	if out.Headers["X-Tenant"] != "acme" || out.Headers["X-Static"] != "v" {
+		t.Errorf("provider headers not expanded: %v", out.Headers)
+	}
+	if e.Headers["X-Tenant"] != "${REASONIX_TEST_TENANT}" {
+		t.Error("ExpandedProvider mutated the original entry")
+	}
+	if e.ExpandedProvider().Headers == nil {
+		t.Error("ExpandedProvider with no headers must stay nil, not become an empty map")
+	}
+}

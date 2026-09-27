@@ -94,6 +94,21 @@ type Config struct {
   need distinct values stay separate single-`model` entries.
 - Streaming tool-call deltas are accumulated by index inside the provider; only
   complete `ToolCall`s are emitted.
+- **Every request carries the client identity and, on gateways that route on it,
+  the conversation id.** Requests go out with `User-Agent: reasonix-agent/1.0`
+  rather than Go's default `Go-http-client/1.1` — gateways that meter agent
+  traffic (OpenCode Go) ask clients to name themselves. When `base_url` is an
+  OpenCode gateway (`opencode.ai`, Zen/Go) each request also carries
+  `x-opencode-session`: the gateway 400s a request without it ("cannot be routed
+  efficiently") because that id is how it keeps one conversation on one route and
+  reuses its prompt cache. The controller rebinds the id to the session's own
+  (`agent.BranchID`) on construction and whenever the session path changes —
+  `/new`, `/resume`, fork, branch switch — so every turn of one conversation
+  presents the same id. Providers opt in by implementing
+  `provider.SessionScoped`; all others are untouched on the wire.
+- **`headers` is the per-provider escape hatch**: a static header map on the entry
+  (`${VAR}` expanded from the environment, like plugin headers) is stamped on
+  every request to that endpoint, under the client's own identity/session headers.
 
 ### 3.2 Tool + registry (`internal/tool`)
 
@@ -480,6 +495,17 @@ models         = ["deepseek-v4-flash", "deepseek-v4-pro"]
 default        = "deepseek-v4-flash"   # optional; defaults to models[0]
 api_key_env    = "DEEPSEEK_API_KEY"
 context_window = 1000000   # tokens; harness compacts older history near this limit (0 disables)
+
+# An OpenCode Go subscription: the harness sends x-opencode-session by itself, so
+# only the endpoint and key are needed.
+[[providers]]
+name        = "opencode-go"
+kind        = "openai"
+base_url    = "https://opencode.ai/zen/go/v1"
+models      = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default     = "deepseek-v4-flash"
+api_key_env = "OPENCODE_GO_TOKEN"
+# headers = { X-Tenant = "acme" }   # optional extra headers; ${VAR} expands from the environment
 
 # A single-model entry (use when a model needs its own base_url/context_window/price).
 [[providers]]

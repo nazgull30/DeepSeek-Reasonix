@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"reasonix/internal/provider"
 )
 
 type modelFetchStatusError struct {
@@ -48,6 +50,7 @@ func FetchModels(ctx context.Context, baseURL, apiKey string) ([]string, error) 
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	req.Header.Set("Accept", "application/json")
+	provider.SetUserAgent(req)
 
 	resp, err := cli.Do(req)
 	if err != nil {

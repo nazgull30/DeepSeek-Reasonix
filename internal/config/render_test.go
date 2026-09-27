@@ -573,6 +573,33 @@ func TestRenderTOMLRoundTripsPerModelPrices(t *testing.T) {
 	}
 }
 
+// TestRenderTOMLRoundTripsProviderHeaders keeps a provider's static `headers`
+// (the escape hatch for endpoint-specific keys) intact through a render.
+func TestRenderTOMLRoundTripsProviderHeaders(t *testing.T) {
+	orig := Default()
+	orig.Providers = []ProviderEntry{{
+		Name:      "opencode-go",
+		Kind:      "openai",
+		BaseURL:   "https://opencode.ai/zen/go/v1",
+		Models:    []string{"deepseek-v4-flash"},
+		Default:   "deepseek-v4-flash",
+		APIKeyEnv: "OPENCODE_GO_TOKEN",
+		Headers:   map[string]string{"X-Tenant": "acme"},
+	}}
+
+	var got Config
+	if _, err := toml.Decode(RenderTOML(orig), &got); err != nil {
+		t.Fatalf("rendered TOML does not parse: %v", err)
+	}
+	p, ok := got.Provider("opencode-go")
+	if !ok {
+		t.Fatal("opencode-go provider missing after round trip")
+	}
+	if p.Headers["X-Tenant"] != "acme" {
+		t.Errorf("headers after round trip = %v, want X-Tenant=acme", p.Headers)
+	}
+}
+
 func TestRenderTOMLRoundTripsVisionModels(t *testing.T) {
 	orig := Default()
 	orig.Providers = []ProviderEntry{

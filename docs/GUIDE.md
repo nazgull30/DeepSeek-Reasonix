@@ -12,6 +12,7 @@
 ## Contents
 
 - [Configuration](#configuration)
+- [Gateways that route on a session (OpenCode Go / Zen)](#gateways-that-route-on-a-session-opencode-go--zen)
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -86,6 +87,39 @@ command = "reasonix-plugin-example"
 ```
 
 For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-configuration-toml).
+
+### Gateways that route on a session (OpenCode Go / Zen)
+
+An OpenCode Go subscription is just another provider entry — no headers to
+configure:
+
+```toml
+[[providers]]
+name        = "opencode-go"
+kind        = "openai"
+base_url    = "https://opencode.ai/zen/go/v1"
+models      = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default     = "deepseek-v4-flash"
+api_key_env = "OPENCODE_GO_TOKEN"
+```
+
+Go rejects a request that arrives without an `x-opencode-session` header (HTTP
+400, "cannot be routed efficiently") — the id is how it keeps one conversation on
+one route and reuses that conversation's prompt cache. Reasonix sends it
+automatically, rebound to the current session on `/new`, `/resume`, fork and
+branch switch, so every turn of a conversation presents the same id. Requests also
+identify as `reasonix-agent/1.0` rather than Go's default `Go-http-client/1.1`.
+
+Models Go serves over the Anthropic shape (`minimax-m3`, the `qwen*` family) need
+their own `kind = "anthropic"` entry pointing at the same `base_url`; the rest use
+`/chat/completions`.
+
+For any other endpoint-specific key, a provider takes static `headers` (values
+expand `${VAR}` from the environment, so secrets stay out of the file):
+
+```toml
+headers = { X-Tenant = "acme", Authorization = "Bearer ${GATEWAY_TOKEN}" }
+```
 
 ## Keyboard shortcuts
 

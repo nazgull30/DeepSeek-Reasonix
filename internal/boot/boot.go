@@ -1387,6 +1387,9 @@ func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (p
 		BaseURL: e.BaseURL,
 		Model:   e.Model,
 		APIKey:  e.APIKey(),
+		// Static per-provider headers (${VAR} already expanded) ride on every
+		// request; the client adds its own identity and session headers on top.
+		Headers: e.ExpandedProvider().Headers,
 		// Pass the key's env var so auth failures can name where to fix it, plus
 		// provider-kind-specific knobs. EffectiveEffort applies a configured
 		// default_effort when the user has not explicitly selected /effort.
